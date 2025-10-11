@@ -10,10 +10,13 @@
 #include <fstream>
 #include <random>
 
+#include "HammingCode.h"
+#include "Utils.h"
+
 #define PI acos(-1)
 
 #define SAMPLE_RATE 48000
-#define SAMPLES_PER_BIT 48
+
 
 using namespace juce;
 
@@ -24,9 +27,7 @@ public:
     int time = 0;
 
     Tester() {}
-
     void audioDeviceAboutToStart(AudioIODevice* device) override {}
-
     void audioDeviceStopped() override {}
 
     void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -36,22 +37,17 @@ public:
         int numSamples,
         const AudioIODeviceCallbackContext& context) {
         // Generate Sine Wave Data
-
-        int sampleRate = 48000;
-        float dPhasePerSample = 2 * PI / (float)sampleRate;
-        float initPhase = 0;
+        double dPhasePerSample = 2 * (double)PI / (double)SAMPLE_RATE;
         float data;
-
         for (int i = 0; i < numSamples; i++) {
 
-            data = sin(dPhasePerSample * 1000 * time) + sin(dPhasePerSample * 10000 * time);
+            data = sin(PI / 24.0f * time) + sin(PI / 2.4f * time);
             time++;
             time %= 48;
             outputChannelData[0][i] = data;
         }
     }
 };
-
 
 
 class Transmitter : public AudioIODeviceCallback {
@@ -91,27 +87,6 @@ public:
     }
 };
 
-std::vector<bool> generateRandomBits(int num_bits) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> bit_dist(0, 1);
-
-    std::vector<bool> bits;
-    bits.reserve(num_bits);
-
-    for (int i = 0; i < num_bits; ++i) {
-        bits.push_back(bit_dist(gen));
-    }
-    return bits;
-}
-
-void writeToFile(const std::vector<bool>& array) {
-    std::ofstream outfile("input.txt");
-    for (const bool& bit : array)
-        outfile << bit;
-    outfile.close();
-}
-
 
 std::vector<float> generateChirp(int length) {
     std::vector<float> preamble(length);
@@ -138,6 +113,58 @@ std::vector<float> generateChirp(int length) {
     return preamble;
 }
 
+std::vector<float> generateSilence(int length) {
+    return std::vector<float>(length, 0.0f);
+}
+
+std::vector<float> modulate(const std::vector<bool>& data) {
+    #define PREAMBLE_LENGTH 480
+    #define BITS_PER_FRAME 10000
+    #define SAMPLES_PER_BIT 48
+    #define SILENCE_LENGTH 100
+    #define LENGTH_BITS 16
+    const double carrier_omega = 20000.0 * PI;
+
+    std::vector<float> chirp = generateChirp(PREAMBLE_LENGTH);
+    std::vector<float> silence = generateSilence(SILENCE_LENGTH);
+
+    std::size_t total_bits = data.size();
+	int frame_num = (total_bits + BITS_PER_FRAME - 1) / BITS_PER_FRAME;
+
+    std::vector<float> output_track;
+    output_track.reserve(frame_num * (PREAMBLE_LENGTH + SILENCE_LENGTH) + total_bits * SAMPLES_PER_BIT);
+
+    int sample_idx = 0;
+    auto frame_begin = data.begin();
+	for (int i = 0; i < frame_num; ++i) {
+        int length = BITS_PER_FRAME > total_bits ? total_bits : BITS_PER_FRAME;
+        total_bits -= length;
+
+        output_track.insert(output_track.end(), chirp.begin(), chirp.end());
+
+        std::vector<bool> frame(frame_begin, frame_begin + length);
+        frame_begin += length;
+
+        /*frame = hammingEncode(frame);
+        length = frame.size();
+
+		std::vector<bool> length_bits = dec2bin(length, LENGTH_BITS);
+        frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
+
+        
+        for (bool bit : frame){
+            float symbol = bit ? 1.0f : -1.0f;
+            for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
+                double t = static_cast<double>(sample_idx) / SAMPLE_RATE;
+                output_track.push_back(symbol * static_cast<float>(sin(carrier_omega * t)));
+                sample_idx++;
+            }
+        }
+        output_track.insert(output_track.end(), silence.begin(), silence.end());
+    }
+    return output_track;
+}
+
 //==============================================================================
 int main(int argc, char* argv[])
 {
@@ -149,42 +176,21 @@ int main(int argc, char* argv[])
     dev_manager.setAudioDeviceSetup(dev_info, false);
 
 
-   /* Tester tester;
+    /*Tester tester;
     dev_manager.addAudioCallback(&tester);
     std::cout << "Playing..." << std::endl;
     getchar();
     dev_manager.removeAudioCallback(&tester);*/
 
-    const double carrier_omega = 20000.0 * PI;
+    std::vector<bool> data = readFromFile("input.txt");
 
-#define PREAMBLE_LENGTH 4800
-    std::vector<float> chirp = generateChirp(PREAMBLE_LENGTH);
-    std::vector<bool> frame = generateRandomBits(10000);
-
-    writeToFile(frame);
-
-    std::size_t total_bits = frame.size();
-    int wave_length = total_bits * SAMPLES_PER_BIT;
-
-    std::vector<float> frame_wave(wave_length);
-    for (int j = 0; j < total_bits; ++j) {
-        float symbol = frame[j] ? 1.0f : -1.0f;
-        for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
-            int sample_idx = j * SAMPLES_PER_BIT + k;
-            double t = static_cast<double>(sample_idx) / SAMPLE_RATE;
-            frame_wave[sample_idx] = symbol * static_cast<float>(sin(carrier_omega * t));
-        }
-    }
-
-    std::vector<float> frame_wave_pre;
-    frame_wave_pre.reserve(PREAMBLE_LENGTH + wave_length);
-    frame_wave_pre.insert(frame_wave_pre.end(), chirp.begin(), chirp.end());
-    frame_wave_pre.insert(frame_wave_pre.end(), frame_wave.begin(), frame_wave.end());
-
+    std::vector<float> modulated_signal = modulate(data);
+    
     bool finished = false;
-    Transmitter transmitter(frame_wave_pre, &finished);
+    Transmitter transmitter(modulated_signal, &finished);
     dev_manager.addAudioCallback(&transmitter);
     while (!finished) {}
     dev_manager.removeAudioCallback(&transmitter);
+    
     return 0;
 }
