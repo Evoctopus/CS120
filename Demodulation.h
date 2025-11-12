@@ -218,7 +218,7 @@ public:
                 syncPower /= 100.0f;
                 syncPower_debug[i] = syncPower;
 
-                if (syncPower > syncPower_localMax && syncPower > 0.5f) {
+                if (syncPower > syncPower_localMax && syncPower > 0.05f) {
                     syncPower_localMax = syncPower;
                     start_index = i;
                 }
@@ -227,8 +227,8 @@ public:
                     syncPower_localMax = 0.0f;
                     std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
                     state = DECODE;
-                    
-					start_index_debug[start_index] = 1;
+
+                    start_index_debug[start_index] = 1;
                     decodedFIFO.assign(frame_buffer.begin() + start_index, frame_buffer.begin() + i);
                     start_index_debug[start_index] = 1;
                     /* detected_chirp.insert(detected_chirp.end(), frame_buffer.begin() + start_index - PREAMBLE_LENGTH, frame_buffer.begin() + start_index);*/
@@ -249,15 +249,15 @@ public:
 
                     for (int j = 0; j < frame_length; ++j) {
                         float bit_power = std::accumulate(demodulated.begin() + j * SAMPLES_PER_BIT,
-							demodulated.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
+                            demodulated.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
                         decoded_bits.push_back((bit_power > 0) ? 1 : 0);
                     }
                     decodedFIFO.clear();
                     state = SYNC;
                 }
                 if (decoded_bits.size() == 10000) {
-                     printf("Frame decoded\n");
-                     break;
+                    printf("Frame decoded\n");
+                    break;
                 }
             }
         }
