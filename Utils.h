@@ -7,7 +7,7 @@
 #include <cstring>
 #include <queue>
 
-#define SAMPLE_RATE 48000
+#define SAMPLE_RATE 96000
 #define PI acos(-1)
 
 std::vector<bool> dec2bin(int num, int length) {

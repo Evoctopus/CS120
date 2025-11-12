@@ -5,9 +5,9 @@
 
 using namespace juce;
 
-#define PREAMBLE_LENGTH 480
+#define PREAMBLE_LENGTH 440
 #define BITS_PER_FRAME 200
-#define SAMPLES_PER_BIT 48
+#define SAMPLES_PER_BIT 12
 #define SILENCE_LENGTH 100
 #define FREQUENCY 8000
 
@@ -118,12 +118,15 @@ public:
     int time = 0;
     std::queue<float> signal;
     int length;
+    std::vector<float> frame_buffer;
 
     Transmitter(std::queue<float>& wave) {
         signal = wave;
     }
     void audioDeviceAboutToStart(AudioIODevice* device) override {}
-    void audioDeviceStopped() override {}
+    void audioDeviceStopped() override {
+        writeToFile(frame_buffer, "received_signal.txt", '\n');
+    }
 
     void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
         int numInputChannels,
@@ -133,7 +136,10 @@ public:
         const AudioIODeviceCallbackContext& context) {
 
         float data;
+        
         for (int i = 0; i < numSamples; i++) {
+			frame_buffer.push_back(inputChannelData[0][i]);
+
             if (!signal.empty()) {
                 data = signal.front();
                 signal.pop();
