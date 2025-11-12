@@ -5,7 +5,9 @@
 #include <random>
 #include <fstream>
 #include <cstring>
+#include <queue>
 
+#define SAMPLE_RATE 48000
 #define PI acos(-1)
 
 std::vector<bool> dec2bin(int num, int length) {
@@ -39,18 +41,30 @@ std::vector<bool> generateRandomBits(int num_bits) {
 	return bits;
 }
 
-void writeToFile(const std::vector<bool>& array, const std::string filename) {
+template <typename T>
+void writeToFile(const std::vector<T>& array, const std::string filename, char connect = '0') {
 	std::ofstream outfile(filename);
-	for (const bool& bit : array)
+	for (const auto& bit : array) {
 		outfile << bit;
+		if (connect != '0') outfile << connect;
+	}
 	outfile.close();
 }
 
-std::vector<bool> readFromFile(const std::string filename) {
+inline void writeLog(float message, const std::string& filename = "log.txt") {
+	std::ofstream logfile(filename, std::ios::app); // 追加模式
+	if (!logfile.is_open()) return;
+
+	logfile << message << std::endl;
+	logfile.close();
+}
+
+std::vector<bool> readFromFile(const std::string filename, char ignore = '2') {
 	std::ifstream infile(filename);
 	std::vector<bool> array;
 	char ch;
 	while (infile.get(ch)) {
+		if (ch == ignore) continue;	
 		if (ch == '0')
 			array.push_back(false);
 		else if (ch == '1')

@@ -15,7 +15,7 @@
 #include "Modulation.h"
 #include "Demodulation.h"
 
-#define SAMPLE_RATE 48000
+
 using namespace juce;
 
 class Tester : public AudioIODeviceCallback {
@@ -47,7 +47,6 @@ public:
     }
 };
 
-
 //==============================================================================
 int main(int argc, char* argv[])
 {
@@ -58,31 +57,54 @@ int main(int argc, char* argv[])
     dev_info.sampleRate = SAMPLE_RATE; 
     dev_manager.setAudioDeviceSetup(dev_info, false);
 
+
     /*Tester tester;
     dev_manager.addAudioCallback(&tester);
     std::cout << "Playing..." << std::endl;
     getchar();
     dev_manager.removeAudioCallback(&tester);*/
 
-    std::vector<bool> data = readFromFile("input.txt");
-    std::vector<float> modulated_signal = modulate(data, SAMPLE_RATE);
 
-    std::vector<float> chirp;
+    int transmit;
+    char c;
 
-	chirp = generateChirp(48000, SAMPLE_RATE);
-    
-    /*bool finished = false;
-    Transmitter transmitter(modulated_signal, &finished);
-    dev_manager.addAudioCallback(&transmitter);
-    while (!finished) {}
-    dev_manager.removeAudioCallback(&transmitter);*/
+    std::cin >> transmit;
 
-    Receiver receiver;
+	std::cout << "Press any key to stop..." << std::endl;
 
-	dev_manager.addAudioCallback(&receiver);
-    getchar();
-	dev_manager.removeAudioCallback(&receiver);
-    
-    
+    if (transmit == 1) {
+        std::vector<bool> data = readFromFile("input.txt");
+        std::queue<float> modulated_signal = modulate(data, SAMPLE_RATE);
+        
+        /*Receiver receiver;
+		receiver.frame_buffer = modulated_signal;
+        receiver.Decode();*/
+
+        /*/Tester tester;
+		dev_manager.addAudioCallback(&tester);
+		std::cin >> c;
+        dev_manager.removeAudioCallback(&tester);*/
+
+        Transmitter transmitter(modulated_signal);
+        dev_manager.addAudioCallback(&transmitter);
+		std::cin >> c;
+        dev_manager.removeAudioCallback(&transmitter);
+	}
+    else {
+        Receiver receiver;
+        dev_manager.addAudioCallback(&receiver);
+        std::cin >> c;
+		dev_manager.removeAudioCallback(&receiver);
+
+		/*std::vector<bool> decoded_bits = readFromFile("decoded_bits.txt");
+
+		std::vector<bool> data = readFromFile("input.txt");
+        int length = data.size();
+        int error = 0;
+        for (int i = 0; i < length; ++i) {
+            if (decoded_bits[i] != data[i]) error++;
+        }
+		printf("BER: %.4f\n", (float)error / length);*/
+    }
     return 0;
 }
