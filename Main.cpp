@@ -1,12 +1,3 @@
-/*
-  ==============================================================================
-
-    This file contains the basic startup code for a JUCE application.
-
-  ==============================================================================
-*/
-
-
 #include <fstream>
 #include <random>
 
@@ -14,10 +5,11 @@
 #include "Utils.h"
 #include "Modulation.h"
 #include "Demodulation.h"
+#include "Mutex_FIFO.h"
+#include "AudioDevice.h"
 
 using namespace juce;
 
-//==============================================================================
 int main(int argc, char* argv[])
 {
     AudioDeviceManager dev_manager;
@@ -34,42 +26,27 @@ int main(int argc, char* argv[])
 
 	std::cout << "Press any key to stop..." << std::endl;
 
-    if (transmit == 1) {
-        std::vector<bool> data = readFromFile("input.txt");
-        std::queue<float> modulated_signal = modulate(data, SAMPLE_RATE);
-        
-        /*Receiver receiver;
-		receiver.frame_buffer = modulated_signal;
-        receiver.Decode();*/
+    Mutex_FIFO<float> Sending_FIFO, Receiving_FIFO;
+    Mutex_FIFO<bool >MAC_FIFO;
 
-        /*/Tester tester;
-		dev_manager.addAudioCallback(&tester);
-		std::cin >> c;
-        dev_manager.removeAudioCallback(&tester);*/
 
-        Transmitter transmitter(modulated_signal);
-        Receiver receiver;
-        dev_manager.addAudioCallback(&transmitter);
-        
-		std::cin >> c;
-        dev_manager.removeAudioCallback(&transmitter);
-        
-	}
-    else {
-        Receiver receiver;
-        dev_manager.addAudioCallback(&receiver);
-        std::cin >> c;
-		dev_manager.removeAudioCallback(&receiver);
+    std::vector<float> signal;
+	Demodulator demodulator(Receiving_FIFO, MAC_FIFO);
+	AudioDevice audio_device(Sending_FIFO, Receiving_FIFO);
 
-		/*std::vector<bool> decoded_bits = readFromFile("decoded_bits.txt");
+    
+    std::vector<bool> data = readFromFile("large.txt");
+    dev_manager.addAudioCallback(&audio_device);
+    modulate(data, Sending_FIFO);
 
-		std::vector<bool> data = readFromFile("input.txt");
-        int length = data.size();
-        int error = 0;
-        for (int i = 0; i < length; ++i) {
-            if (decoded_bits[i] != data[i]) error++;
-        }
-		printf("BER: %.4f\n", (float)error / length);*/
-    }
+    demodulator.startThread();
+ 
+	std::cin >> c;
+    dev_manager.removeAudioCallback(&audio_device);
+	//demodulator.Decode(Receiving_FIFO.vectorize());
+    demodulator.signalThreadShouldExit();
+
+    writeToFile(MAC_FIFO.vectorize(), "output.txt", '0');
+	//writeToFile(signal, "received_signal.txt", '\n');
     return 0;
 }

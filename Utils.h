@@ -7,8 +7,11 @@
 #include <cstring>
 #include <queue>
 
+
+
 #define SAMPLE_RATE 96000
 #define PI acos(-1)
+
 
 std::vector<bool> dec2bin(int num, int length) {
 	std::vector<bool> bits(length, false);
@@ -42,8 +45,10 @@ std::vector<bool> generateRandomBits(int num_bits) {
 }
 
 template <typename T>
-void writeToFile(const std::vector<T>& array, const std::string filename, char connect = '0') {
-	std::ofstream outfile(filename);
+void writeToFile(const std::vector<T>& array, const std::string filename, char connect = '0', bool append=false){
+	
+	std::ios_base::openmode mode = append ? std::ios_base::app : std::ios_base::out;
+	std::ofstream outfile(filename, mode);;
 	for (const auto& bit : array) {
 		outfile << bit;
 		if (connect != '0') outfile << connect;
@@ -90,3 +95,16 @@ auto dot_product(const std::vector<T1>& a, const std::vector<T2>& b) -> decltype
 
 	return result;
 }
+
+template <typename T>
+std::vector<T> queue_to_vector(std::queue<T> q) {
+	std::vector<T> v;
+	v.reserve(q.size());
+	while (!q.empty()) {
+		v.push_back(q.front());
+		q.pop();
+	}
+	return v;
+}
+
+

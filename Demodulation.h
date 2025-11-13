@@ -3,6 +3,7 @@
 
 #include "Utils.h"
 #include "Modulation.h"
+#include "Mutex_FIFO.h"
 
 using namespace juce;
 
@@ -27,29 +28,30 @@ std::vector<float> smooth(const std::vector<float>& x, int window_size) {
     return y;
 }
 
-class Receiver : public juce::AudioIODeviceCallback {
+class Demodulator : public juce::Thread {
 
 private:
-    int sampleRate;
+
     int time = 0;
+    Mutex_FIFO<float> &receiving_fifo;
+    Mutex_FIFO<bool> &mac_fifo;
 
     std::vector<float> syncFIFO;
     std::vector<float> decodedFIFO;
     std::vector<float> chirp;
     std::vector<float> carrier;
     std::vector<float> tmp_buffer;
+    std::queue<bool> decoded_bits;
+
     float power = 0.0f;
     int start_index = 0;
     float syncPower_localMax = 0.0f;
-
     enum State { SYNC, DECODE } state = SYNC;
     int frame_length = BITS_PER_FRAME;
     int frame_size = frame_length * SAMPLES_PER_BIT;
     bool finished = false;
 
-    std::vector<bool> decoded_bits;
-
-
+    std::vector<float> frame_buffer;
     std::vector<float> syncPower_debug;
     std::vector<float> power_debug;
     std::vector<bool> start_index_debug;
@@ -62,137 +64,118 @@ private:
 
 public:
 
-    std::vector<float> frame_buffer;
-    Receiver() {
-
+   
+	Demodulator(Mutex_FIFO<float>& Receiving_FIFO, Mutex_FIFO<bool>& MAC_FIFO) : 
+		juce::Thread("Demodulator"), receiving_fifo(Receiving_FIFO), mac_fifo(MAC_FIFO)
+    {
         syncFIFO.resize(PREAMBLE_LENGTH, 0.0f);
-        power = 0.0f;
-        start_index = 0;
-        syncPower_localMax = 0.0f;
         state = SYNC;
-        sampleRate = 48000;
-        chirp = generateChirp(PREAMBLE_LENGTH, sampleRate);
+        chirp = generateChirp();
         carrier = generateCarrierWave(SAMPLES_PER_BIT);
     }
 
-    void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
-        sampleRate = device->getCurrentSampleRate();
-        juce::Logger::writeToLog("Audio device started with sample rate: " + juce::String(sampleRate));
+    void writeLog(bool append = false) {
+
+        //Decode();
+		//printf("writing log...\n");
+        //writeToFile(frame_buffer, "received_signal.txt", '\n', append);
+        writeToFile(syncPower_debug, "sync_power.txt", '\n', append);
+        //writeToFile(power_debug, "power.txt", '\n');
+        //writeToFile(start_index_debug, "start_index.txt", '\n');
+        //writeToFile(windows, "windows.txt", '\n');
+        //writeToFile(demodulated_debug, "demodulated.txt", '\n');
+        //writeToFile(detected_chirp, "detected_chirp.txt", '\n');
+        //std::cout << frame_detected << std::endl;
     }
 
-    void audioDeviceStopped() override {
+    void run() override {
 
-        Decode();
-        writeToFile(decoded_bits, "output.txt", '0');
-
-        writeToFile(frame_buffer, "received_signal.txt", '\n');
-        writeToFile(syncPower_debug, "sync_power.txt", '\n');
-        writeToFile(power_debug, "power.txt", '\n');
-        writeToFile(start_index_debug, "start_index.txt", '\n');
-        writeToFile(windows, "windows.txt", '\n');
+        float current_sample;
         
-        writeToFile(demodulated_debug, "demodulated.txt", '\n');
-        writeToFile(detected_chirp, "detected_chirp.txt", '\n');
+		printf("Demodulation thread started.\n");
+        while (!threadShouldExit()) {
 
-        std::cout << frame_detected << std::endl;
-    }
+            if (receiving_fifo.pop(current_sample)) {
+                frame_buffer.push_back(current_sample);
+                
+                power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
+                power_debug.push_back(power);
 
-    void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
-        int numInputChannels,
-        float* const* outputChannelData,
-        int numOutputChannels,
-        int numSamples,
-        const juce::AudioIODeviceCallbackContext& context) override {
+                if (state == SYNC) {
 
-        if (finished) return;
-        for (int i = 0; i < numSamples; ++i) {
+                    windows.push_back(0.0f);
+                    demodulated_debug.push_back(0.0f);
 
-            float current_sample = inputChannelData[0][i];
+                    syncFIFO.erase(syncFIFO.begin());
+                    syncFIFO.push_back(current_sample);
 
-            frame_buffer.push_back(current_sample);
-
-            continue;
-            power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
-
-            power_debug.push_back(power);
-            syncPower_debug.push_back(0.0f);
-            start_index_debug.push_back(0);
-
-            if (state == SYNC) {
-
-                windows.push_back(0.0f);
-                demodulated_debug.push_back(0.0f);
-
-                syncFIFO.erase(syncFIFO.begin());
-                syncFIFO.push_back(current_sample);
-
-                float syncPower = 0.0f;
-                for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
-                    syncPower += syncFIFO[j] * chirp[j];
-                }
-                syncPower /= 100.0f;
-                syncPower_debug[time] = syncPower;
-
-                if (syncPower > syncPower_localMax && syncPower > 0.05f) {
-                    syncPower_localMax = syncPower;
-                    start_index = time;
-                    tmp_buffer.clear();
-					tmp_buffer.push_back(current_sample);
-                }
-                else if ((time - start_index > PREAMBLE_LENGTH) && (start_index != 0)) {
-                    printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
-                    syncPower_localMax = 0.0f;
-                    std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
-                    state = DECODE;
-
-                    start_index_debug[start_index] = 1;
-                    decodedFIFO.assign(tmp_buffer.begin(), tmp_buffer.end());
-                    start_index_debug[start_index] = 1;
-                    /* detected_chirp.insert(detected_chirp.end(), frame_buffer.begin() + start_index - PREAMBLE_LENGTH, frame_buffer.begin() + start_index);*/
-                    start_index = 0;
-                    frame_detected++;
-                }
-            }
-            else if (state == DECODE) {
-                decodedFIFO.push_back(current_sample);
-                if (decodedFIFO.size() >= frame_size) {
-
-                    std::vector<float> demodulated(frame_size);
-                    for (int j = 0; j < frame_size; ++j) {
-                        demodulated[j] = decodedFIFO[j] * carrier[j % SAMPLES_PER_BIT];
+                    tmp_buffer.push_back(current_sample);
+                    float syncPower = 0.0f;
+                    for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
+                        syncPower += syncFIFO[j] * chirp[j];
                     }
-                    demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
-                    std::vector<float> decodeFIFO_removecarrier = smooth(demodulated, 10);
+					syncPower /= 100.0f;
+                    syncPower_debug.push_back(syncPower);
 
-                    windows.insert(windows.end(), decodeFIFO_removecarrier.begin(), decodeFIFO_removecarrier.end());
-                    for (int j = 0; j < frame_length; ++j) {
-                        int mid = SAMPLES_PER_BIT / 2 + j * SAMPLES_PER_BIT;
-                        int start = mid - 10;
-                        int end = mid + 10;
-                        double bit_power = 0.0f;
-                        for (int k = start; k < end; ++k) {
-                            bit_power += decodeFIFO_removecarrier[k];
+                    if (syncPower > syncPower_localMax && syncPower > 0.6f) {
+                        syncPower_localMax = syncPower;
+                        start_index = time;
+                        tmp_buffer.clear();
+                    }
+                    else if ((time - start_index > PREAMBLE_LENGTH) && (start_index != 0)) {
+                        printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
+                        syncPower_localMax = 0.0f;
+                        start_index = 0;
+                        std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
+                        state = DECODE;
+
+                        decodedFIFO.assign(tmp_buffer.begin(), tmp_buffer.end());
+                        tmp_buffer.clear();
+
+                        frame_detected++;
+                    }
+                }
+                else if (state == DECODE) {
+
+                    syncPower_debug.push_back(0.0f);
+                    decodedFIFO.push_back(current_sample);
+                    if (decodedFIFO.size() >= frame_size) {
+
+                        std::vector<float> demodulated(frame_size);
+                        for (int j = 0; j < frame_size; ++j) {
+                            demodulated[j] = decodedFIFO[j] * carrier[j % SAMPLES_PER_BIT];
                         }
-                        decoded_bits.push_back((bit_power > 0) ? 1 : 0);
+                        demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
+                        //std::vector<float> decodeFIFO_removecarrier = smooth(demodulated, 10);
+
+                        for (int j = 0; j < frame_length; ++j) {
+                            float bit_power = std::accumulate(demodulated.begin() + j * SAMPLES_PER_BIT,
+                                demodulated.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
+                            decoded_bits.push(bit_power > 0);
+                        }
+                        if (decoded_bits.size() >= 1024) {
+                            mac_fifo.push_batch(std::move(decoded_bits));
+                            std::queue<bool> empty_queue;
+                            std::swap(decoded_bits, empty_queue);
+                        }
+                        decodedFIFO.clear();
+                        state = SYNC;
                     }
-                    decodedFIFO.clear();
-                    state = SYNC;
                 }
+                time++;
             }
-            if (decoded_bits.size() == 10000) {
-                printf("Frame decoded\n");
-                finished = true;
-            }
-            time++;
         }
+        mac_fifo.push_batch(decoded_bits);
+        printf("Frame %d decoded\n", frame_detected);
     }
 
-    void Decode() {
+    void Decode(const std::vector<float>& data) {
 
-        int length = frame_buffer.size();
+        int length = data.size();
+        std::vector<bool> decoded_bits;
         for (int i = 0; i < length; ++i) {
 
-            float current_sample = frame_buffer[i];
+            float current_sample = data[i];
             power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
 
             power_debug.push_back(power);
@@ -214,7 +197,7 @@ public:
                 syncPower /= 100.0f;
                 syncPower_debug[i] = syncPower;
 
-                if (syncPower > syncPower_localMax && syncPower > 0.05f) {
+                if (syncPower > syncPower_localMax && syncPower > 0.7f) {
                     syncPower_localMax = syncPower;
                     start_index = i;
                 }
@@ -225,8 +208,7 @@ public:
                     state = DECODE;
 
                     start_index_debug[start_index] = 1;
-                    decodedFIFO.assign(frame_buffer.begin() + start_index, frame_buffer.begin() + i);
-                    start_index_debug[start_index] = 1;
+                    decodedFIFO.assign(data.begin() + start_index, data.begin() + i);
                     /* detected_chirp.insert(detected_chirp.end(), frame_buffer.begin() + start_index - PREAMBLE_LENGTH, frame_buffer.begin() + start_index);*/
                     start_index = 0;
                     frame_detected++;
@@ -240,7 +222,7 @@ public:
                     for (int j = 0; j < frame_size; ++j) {
                         demodulated[j] = decodedFIFO[j] * carrier[j % SAMPLES_PER_BIT];
                     }
-                    demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
+                    //demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
                     //std::vector<float> decodeFIFO_removecarrier = smooth(demodulated, 10);
 
                     for (int j = 0; j < frame_length; ++j) {
@@ -251,11 +233,10 @@ public:
                     decodedFIFO.clear();
                     state = SYNC;
                 }
-                if (decoded_bits.size() == 10000) {
-                    printf("Frame decoded\n");
-                    break;
-                }
             }
         }
+        printf("Decoded done, find %d frames \n", frame_detected);
+        writeToFile(decoded_bits, "output.txt", '0');
+        writeLog();
     }
 };

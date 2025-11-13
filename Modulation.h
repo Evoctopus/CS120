@@ -1,7 +1,7 @@
 #pragma once
 
 #include <vector>
-#include "Utils.h"
+#include "Mutex_FIFO.h"
 
 using namespace juce;
 
@@ -11,7 +11,7 @@ using namespace juce;
 #define SILENCE_LENGTH 100
 #define FREQUENCY 8000
 
-std::vector<float> generateChirp(int length, int sample_rate) {
+std::vector<float> generateChirp() {
     float cycle = 1.0 / float(SAMPLE_RATE);
     std::vector<float> Preamble(PREAMBLE_LENGTH, 0.0f);
     std::vector<float> f_p(PREAMBLE_LENGTH, 0.0f);
@@ -71,9 +71,55 @@ void push_vector(std::queue<float>& q, const std::vector<float>& v) {
     }
 }
 
-std::queue<float> modulate(const std::vector<bool>& data, int sample_rate) {
 
-    std::vector<float> chirp = generateChirp(PREAMBLE_LENGTH, sample_rate);
+void modulate(const std::vector<bool>& data, Mutex_FIFO<float>& sending_fifo) {
+
+    std::vector<float> chirp = generateChirp();
+    std::vector<float> silence = generateSilence(SILENCE_LENGTH);
+    std::vector<float> carrier = generateCarrierWave(SAMPLES_PER_BIT);
+
+    std::size_t total_bits = data.size();
+    std::queue<float> output_track;
+    int frame_num = (total_bits + BITS_PER_FRAME - 1) / BITS_PER_FRAME;
+    std::vector<float> warm_up = generateCarrierWave(10000);
+
+    auto frame_begin = data.begin();
+    for (int i = 0; i < frame_num; ++i) {
+
+        int length = BITS_PER_FRAME > total_bits ? total_bits : BITS_PER_FRAME;
+        total_bits -= length;
+        
+        push_vector(output_track, chirp);
+
+        std::vector<bool> frame(frame_begin, frame_begin + length);
+        frame_begin += length;
+
+        /*frame = hammingEncode(frame);
+        length = frame.size();
+
+        std::vector<bool> length_bits = dec2bin(length, LENGTH_BITS);
+        frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
+         
+        for (int i = 0; i < length; ++i) {
+            float symbol = frame[i] ? 1.0f : -1.0f;
+            for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
+                output_track.push(symbol * carrier[k]);
+            }
+        }
+        if (output_track.size() >= 2048) {
+            sending_fifo.push_batch(std::move(output_track));
+            std::queue<float> empty_queue;
+            std::swap(output_track, empty_queue);
+		}
+    }
+    sending_fifo.push_batch(output_track);
+    return;
+}
+
+
+std::queue<float> modulate2queue(const std::vector<bool>& data) {
+
+    std::vector<float> chirp = generateChirp();
     std::vector<float> silence = generateSilence(SILENCE_LENGTH);
     std::vector<float> carrier = generateCarrierWave(SAMPLES_PER_BIT);
 
@@ -83,14 +129,14 @@ std::queue<float> modulate(const std::vector<bool>& data, int sample_rate) {
     std::queue<float> output_track;
     std::vector<float> warm_up = generateCarrierWave(10000);
 
-	push_vector(output_track, warm_up);
+    push_vector(output_track, warm_up);
 
     auto frame_begin = data.begin();
     for (int i = 0; i < frame_num; ++i) {
         int length = BITS_PER_FRAME > total_bits ? total_bits : BITS_PER_FRAME;
         total_bits -= length;
-        
-		push_vector(output_track, chirp);
+
+        push_vector(output_track, chirp);
 
         std::vector<bool> frame(frame_begin, frame_begin + length);
         frame_begin += length;
@@ -110,45 +156,3 @@ std::queue<float> modulate(const std::vector<bool>& data, int sample_rate) {
     }
     return output_track;
 }
-
-class Transmitter : public AudioIODeviceCallback {
-
-public:
-
-    int time = 0;
-    std::queue<float> signal;
-    int length;
-    std::vector<float> frame_buffer;
-
-    Transmitter(std::queue<float>& wave) {
-        signal = wave;
-    }
-    void audioDeviceAboutToStart(AudioIODevice* device) override {}
-    void audioDeviceStopped() override {
-        writeToFile(frame_buffer, "received_signal.txt", '\n');
-    }
-
-    void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
-        int numInputChannels,
-        float* const* outputChannelData,
-        int numOutputChannels,
-        int numSamples,
-        const AudioIODeviceCallbackContext& context) {
-
-        float data;
-        
-        for (int i = 0; i < numSamples; i++) {
-			frame_buffer.push_back(inputChannelData[0][i]);
-
-            if (!signal.empty()) {
-                data = signal.front();
-                signal.pop();
-            }
-            else {
-                data = 0.0f;
-			}
-            outputChannelData[0][i] = data;
-        }
-    }
-};
-
