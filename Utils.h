@@ -32,12 +32,12 @@
 #define ADDRESS 1
 
 #define FRAME_SEQUENCY_BITS 8
-#define MAX_RESEND 3
+#define MAX_RESEND 5
 
-#define SWS 100
-#define RWS 100
+#define SWS 50
+#define RWS 50
 
-#define TIMEOUT_MS 3000
+#define TIMEOUT_MS 1000
 
 
 std::vector<bool> dec2bin(int num, int length) {

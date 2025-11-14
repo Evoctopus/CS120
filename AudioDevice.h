@@ -9,19 +9,19 @@ class AudioDevice : public AudioIODeviceCallback {
 
 public:
 
-    int time = 0;
-    std::queue<float> signal;
-    int length;
-    std::vector<float> frame_buffer;
-
     Mutex_FIFO<float> &sending_fifo, &receiving_fifo;
+    std::atomic<bool> &channel_is_idle;
 
-    AudioDevice(Mutex_FIFO<float>& Sending_FIFO, Mutex_FIFO<float>& Receiving_FIFO) : 
-		sending_fifo(Sending_FIFO), receiving_fifo(Receiving_FIFO) {}
+    std::vector<float> power_debug;
+
+    AudioDevice(Mutex_FIFO<float>& Sending_FIFO, Mutex_FIFO<float>& Receiving_FIFO, std::atomic<bool>& Channel_is_idle) :
+		sending_fifo(Sending_FIFO), receiving_fifo(Receiving_FIFO), channel_is_idle(Channel_is_idle) {}
 
     void audioDeviceAboutToStart(AudioIODevice* device) override {}
     void audioDeviceStopped() override {
         //writeToFile(receiving_fifo.vectorize(), "received_signal.txt", '\n');
+        writeToFile(power_debug, "power.txt", '\n');
+
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -38,5 +38,17 @@ public:
 		}
 		//printf("Sent %zu samples\n", samples);
         receiving_fifo.push_batch(inputChannelData[0], numSamples);
+
+
+        float power = 0.0f;
+        for (int i = 0; i < numSamples; ++i) {
+            float sample = inputChannelData[0][i];
+            power += sample * sample;
+        }
+        power /= numSamples;
+        if (power >= 0.02f) channel_is_idle = false;
+        else channel_is_idle = true;
+        power_debug.push_back(power);
+
     }
 };

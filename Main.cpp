@@ -35,13 +35,12 @@ int main(int argc, char* argv[])
     Mutex_FIFO<float> Sending_FIFO, Receiving_FIFO;
     Mutex_FIFO<std::deque<bool>> MAC_FIFO;
     Mutex_FIFO<bool> App_FIFO;
+    std::atomic<bool> channel_is_idle;
 
-
-    std::vector<float> signal;
 	Demodulator demodulator(Receiving_FIFO, MAC_FIFO);
 	Modulator modulator(Sending_FIFO);
-	AudioDevice audio_device(Sending_FIFO, Receiving_FIFO);
-	MAC mac(MAC_FIFO, App_FIFO, modulator);
+	AudioDevice audio_device(Sending_FIFO, Receiving_FIFO, channel_is_idle);
+	MAC mac(MAC_FIFO, App_FIFO, modulator, channel_is_idle);
     
     std::vector<bool> data = readFromFile("large.txt");
     dev_manager.addAudioCallback(&audio_device);
