@@ -3,6 +3,7 @@
 #include "Utils.h"
 #include "Mutex_FIFO.h"
 #include "Modulation.h"
+#include "CRC.h"
 
 
 
@@ -13,6 +14,7 @@ private:
 
 	Mutex_FIFO<std::deque<bool>>& mac_fifo;
 	Mutex_FIFO<bool>& output_fifo;
+	CRC8 crc_handler;
 	std::mutex mtx;
 
 	struct Frame {
@@ -183,7 +185,7 @@ public:
 
 		while (!threadShouldExit()) {
 
-			if (mac_fifo.pop(receiving_buffer)) {
+			if (mac_fifo.pop(receiving_buffer) && decode_crc(receiving_buffer)) {
 				int dest = decode_header(DEST_BITS, receiving_buffer);
 				if (dest == ADDRESS)
 				{
@@ -203,12 +205,26 @@ public:
 			}
 		}
 	}
+
+	void encode_crc(std::deque<bool>& payload) const {
+		int crc = crc_handler.calculate(payload);
+		encode_header(crc, payload, CRC_BITS);
+		return;
+	}
+
 	void encode_mac_header(std::deque<bool>& payload, int type, int dest, int sequence_num) const {
 		encode_header(sequence_num, payload, FRAME_SEQUENCY_BITS);
 		encode_header(type, payload, TYPE_BITS);
 		encode_header(ADDRESS, payload, SRC_BITS);
 		encode_header(dest, payload, DEST_BITS);
+		encode_crc(payload);
 		return;
+	}
+
+	bool decode_crc(std::deque<bool>& payload) {
+		int crc = decode_header(CRC_BITS, payload);
+		int crc_code = crc_handler.calculate(payload);
+		return crc == crc_code;
 	}
 
 	void send_ACK(int dest, int sequence_num) const {

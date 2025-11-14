@@ -51,13 +51,12 @@ std::vector<bool> dec2bin(int num, int length) {
 
 
 
-std::vector<bool> generateRandomBits(int num_bits) {
+std::deque<bool> generateRandomBits(int num_bits) {
 	std::random_device rd;
 	std::mt19937 gen(rd());
 	std::uniform_int_distribution<int> bit_dist(0, 1);
 
-	std::vector<bool> bits;
-	bits.reserve(num_bits);
+	std::deque<bool> bits;
 
 	for (int i = 0; i < num_bits; ++i) {
 		bits.push_back(bit_dist(gen));

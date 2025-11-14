@@ -8,6 +8,7 @@
 #include "Mutex_FIFO.h"
 #include "AudioDevice.h"
 #include "MAC.h"
+#include "CRC.h"
 
 using namespace juce;
 
