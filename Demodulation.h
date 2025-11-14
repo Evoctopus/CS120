@@ -34,30 +34,24 @@ private:
 
     int time = 0;
     Mutex_FIFO<float> &receiving_fifo;
-    Mutex_FIFO<bool> &mac_fifo;
+    Mutex_FIFO<std::deque<bool>> &mac_fifo;
 
-    std::vector<float> syncFIFO;
-    std::vector<float> decodedFIFO;
+    std::deque<float> syncFIFO;
+    std::deque<float> decodedFIFO;
+
     std::vector<float> chirp;
-    std::vector<float> carrier;
-    std::vector<float> tmp_buffer;
-    std::queue<bool> decoded_bits;
-
+    std::vector<float> carrier1;
+    std::vector<float> carrier2;
+    
     float power = 0.0f;
     int start_index = 0;
     float syncPower_localMax = 0.0f;
     enum State { SYNC, DECODE } state = SYNC;
-    int frame_length = BITS_PER_FRAME;
-    int frame_size = frame_length * SAMPLES_PER_BIT;
-    bool finished = false;
+    int frame_length = 0;
 
     std::vector<float> frame_buffer;
     std::vector<float> syncPower_debug;
     std::vector<float> power_debug;
-    std::vector<bool> start_index_debug;
-    std::vector<float> windows;
-    std::vector<float> demodulated_debug;
-    std::vector<float> detected_chirp;
 
     int frame_detected = 0;
 
@@ -65,13 +59,14 @@ private:
 public:
 
    
-	Demodulator(Mutex_FIFO<float>& Receiving_FIFO, Mutex_FIFO<bool>& MAC_FIFO) : 
+	Demodulator(Mutex_FIFO<float>& Receiving_FIFO, Mutex_FIFO<std::deque<bool>>& MAC_FIFO) :
 		juce::Thread("Demodulator"), receiving_fifo(Receiving_FIFO), mac_fifo(MAC_FIFO)
     {
         syncFIFO.resize(PREAMBLE_LENGTH, 0.0f);
         state = SYNC;
         chirp = generateChirp();
-        carrier = generateCarrierWave(SAMPLES_PER_BIT);
+        carrier1 = generateCarrierWave(FREQUENCY1);
+		carrier2 = generateCarrierWave(FREQUENCY2);
     }
 
     void writeLog(bool append = false) {
@@ -91,8 +86,6 @@ public:
     void run() override {
 
         float current_sample;
-        
-		printf("Demodulation thread started.\n");
         while (!threadShouldExit()) {
 
             if (receiving_fifo.pop(current_sample)) {
@@ -103,13 +96,10 @@ public:
 
                 if (state == SYNC) {
 
-                    windows.push_back(0.0f);
-                    demodulated_debug.push_back(0.0f);
-
-                    syncFIFO.erase(syncFIFO.begin());
+                    syncFIFO.pop_front();
                     syncFIFO.push_back(current_sample);
 
-                    tmp_buffer.push_back(current_sample);
+                    decodedFIFO.push_back(current_sample);
                     float syncPower = 0.0f;
                     for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
                         syncPower += syncFIFO[j] * chirp[j];
@@ -117,21 +107,17 @@ public:
 					syncPower /= 100.0f;
                     syncPower_debug.push_back(syncPower);
 
-                    if (syncPower > syncPower_localMax && syncPower > 0.6f) {
+                    if (syncPower > syncPower_localMax && syncPower > 0.2f) {
                         syncPower_localMax = syncPower;
                         start_index = time;
-                        tmp_buffer.clear();
+                        decodedFIFO.clear();
                     }
-                    else if ((time - start_index > PREAMBLE_LENGTH) && (start_index != 0)) {
+                    else if ((time - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
                         printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
                         syncPower_localMax = 0.0f;
                         start_index = 0;
                         std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
                         state = DECODE;
-
-                        decodedFIFO.assign(tmp_buffer.begin(), tmp_buffer.end());
-                        tmp_buffer.clear();
-
                         frame_detected++;
                     }
                 }
@@ -139,34 +125,56 @@ public:
 
                     syncPower_debug.push_back(0.0f);
                     decodedFIFO.push_back(current_sample);
-                    if (decodedFIFO.size() >= frame_size) {
+                    size_t decoded_size = decodedFIFO.size();
 
-                        std::vector<float> demodulated(frame_size);
-                        for (int j = 0; j < frame_size; ++j) {
-                            demodulated[j] = decodedFIFO[j] * carrier[j % SAMPLES_PER_BIT];
-                        }
-                        demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
-                        //std::vector<float> decodeFIFO_removecarrier = smooth(demodulated, 10);
+                    if (decoded_size >= LENGTH_FIELD_SIZE && frame_length == 0) {
+                        std::deque<float> length_field(decodedFIFO.begin(), decodedFIFO.begin() + LENGTH_FIELD_SIZE);
+                        decodedFIFO.erase(decodedFIFO.begin(), decodedFIFO.begin() + LENGTH_FIELD_SIZE);
+                        std::deque<bool> decoded_bits = extract_data(length_field, LENGTH_BITS);
+                        frame_length = decode_header(LENGTH_BITS, decoded_bits);
+                        decoded_size -= LENGTH_FIELD_SIZE;
+                        //printf("Frame length %d\n", frame_length);
+                    }
 
-                        for (int j = 0; j < frame_length; ++j) {
-                            float bit_power = std::accumulate(demodulated.begin() + j * SAMPLES_PER_BIT,
-                                demodulated.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
-                            decoded_bits.push(bit_power > 0);
-                        }
-                        if (decoded_bits.size() >= 1024) {
-                            mac_fifo.push_batch(std::move(decoded_bits));
-                            std::queue<bool> empty_queue;
-                            std::swap(decoded_bits, empty_queue);
-                        }
+                    if (frame_length != 0 && decoded_size >= (frame_length + 1)/2 * SAMPLES_PER_BIT) {
+                        std::deque<bool> decoded_bits = extract_data(decodedFIFO, frame_length);
+                        //print_deque(decoded_bits, "DECODED_BITS");
+                        mac_fifo.push(std::move(decoded_bits));
                         decodedFIFO.clear();
                         state = SYNC;
+                        frame_length = 0;
                     }
                 }
                 time++;
             }
         }
-        mac_fifo.push_batch(decoded_bits);
         printf("Frame %d decoded\n", frame_detected);
+    }
+
+    std::deque<bool> extract_data(const std::deque<float>& signal, int bit_num) {
+
+        size_t size = signal.size();
+        std::vector<float> demodulated1(size);
+		std::vector<float> demodulated2(size);
+        for (int j = 0; j < size; ++j) {
+            demodulated1[j] = signal[j] * carrier1[j % SAMPLES_PER_BIT];
+			demodulated2[j] = signal[j] * carrier2[j % SAMPLES_PER_BIT];
+        }
+        
+        std::deque<bool> decoded_bits;
+        int i = 0;
+        while (i < bit_num) {
+            int j = i / 2;
+            float bit_power = std::accumulate(demodulated1.begin() + j * SAMPLES_PER_BIT,
+                demodulated1.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
+            decoded_bits.push_back(bit_power > 0);
+			if (++i >= bit_num) break;
+            bit_power = std::accumulate(demodulated2.begin() + j * SAMPLES_PER_BIT,
+                demodulated2.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
+			decoded_bits.push_back(bit_power > 0);
+			++i;
+        }
+        return decoded_bits;
     }
 
     void Decode(const std::vector<float>& data) {
@@ -180,12 +188,9 @@ public:
 
             power_debug.push_back(power);
             syncPower_debug.push_back(0.0f);
-            start_index_debug.push_back(0);
 
             if (state == SYNC) {
 
-                windows.push_back(0.0f);
-                demodulated_debug.push_back(0.0f);
 
                 syncFIFO.erase(syncFIFO.begin());
                 syncFIFO.push_back(current_sample);
@@ -207,31 +212,33 @@ public:
                     std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
                     state = DECODE;
 
-                    start_index_debug[start_index] = 1;
                     decodedFIFO.assign(data.begin() + start_index, data.begin() + i);
-                    /* detected_chirp.insert(detected_chirp.end(), frame_buffer.begin() + start_index - PREAMBLE_LENGTH, frame_buffer.begin() + start_index);*/
+           
                     start_index = 0;
                     frame_detected++;
                 }
             }
             else if (state == DECODE) {
+                syncPower_debug.push_back(0.0f);
                 decodedFIFO.push_back(current_sample);
-                if (decodedFIFO.size() >= frame_size) {
+                size_t decoded_size = decodedFIFO.size();
 
-                    std::vector<float> demodulated(frame_size);
-                    for (int j = 0; j < frame_size; ++j) {
-                        demodulated[j] = decodedFIFO[j] * carrier[j % SAMPLES_PER_BIT];
-                    }
-                    //demodulated_debug.insert(demodulated_debug.end(), demodulated.begin(), demodulated.end());
-                    //std::vector<float> decodeFIFO_removecarrier = smooth(demodulated, 10);
+                if (decoded_size >= LENGTH_FIELD_SIZE && frame_length == 0) {
+                    std::deque<float> length_field(decodedFIFO.begin(), decodedFIFO.begin() + LENGTH_FIELD_SIZE);
+                    decodedFIFO.erase(decodedFIFO.begin(), decodedFIFO.begin() + LENGTH_FIELD_SIZE);
+                    std::deque<bool> decoded_bits = extract_data(length_field, LENGTH_BITS);
+                    frame_length = decode_header(LENGTH_BITS, decoded_bits);
+                    decoded_size -= LENGTH_FIELD_SIZE;
+                    //printf("Frame length %d\n", frame_length);
+                }
 
-                    for (int j = 0; j < frame_length; ++j) {
-                        float bit_power = std::accumulate(demodulated.begin() + j * SAMPLES_PER_BIT,
-                            demodulated.begin() + (j + 1) * SAMPLES_PER_BIT, 0.0f);
-                        decoded_bits.push_back((bit_power > 0) ? 1 : 0);
-                    }
+                if (frame_length != 0 && decoded_size >= (frame_length + 1) / 2 * SAMPLES_PER_BIT) {
+                    std::deque<bool> decoded_bits = extract_data(decodedFIFO, frame_length);
+                    //print_deque(decoded_bits, "DECODED_BITS");
+                    mac_fifo.push(std::move(decoded_bits));
                     decodedFIFO.clear();
                     state = SYNC;
+                    frame_length = 0;
                 }
             }
         }

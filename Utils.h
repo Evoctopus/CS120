@@ -6,11 +6,38 @@
 #include <fstream>
 #include <cstring>
 #include <queue>
+#include <chrono>
 
 
 
 #define SAMPLE_RATE 96000
 #define PI acos(-1)
+
+
+#define PREAMBLE_LENGTH 240
+#define BITS_PER_FRAME 200
+#define SAMPLES_PER_BIT 12
+#define SILENCE_LENGTH 100
+#define FREQUENCY1 8000
+#define FREQUENCY2 16000
+
+#define LENGTH_BITS 8
+#define LENGTH_FIELD_SIZE (LENGTH_BITS + 1) / 2 * SAMPLES_PER_BIT
+
+/*-------------MAC---------------*/
+#define DEST_BITS 1
+#define SRC_BITS 1
+#define TYPE_BITS 1
+#define CRC_BITS 8
+#define ADDRESS 1
+
+#define FRAME_SEQUENCY_BITS 8
+#define MAX_RESEND 3
+
+#define SWS 100
+#define RWS 100
+
+#define TIMEOUT_MS 3000
 
 
 std::vector<bool> dec2bin(int num, int length) {
@@ -22,13 +49,7 @@ std::vector<bool> dec2bin(int num, int length) {
 	return bits;
 }
 
-int bin2dec(const std::vector<bool>& bits) {
-	int num = 0;
-	for (bool bit : bits) {
-		num = (num << 1) | bit;
-	}
-	return num;
-}
+
 
 std::vector<bool> generateRandomBits(int num_bits) {
 	std::random_device rd;
@@ -79,32 +100,38 @@ std::vector<bool> readFromFile(const std::string filename, char ignore = '2') {
 	return array;
 }
 
-template <typename T1, typename T2>
-auto dot_product(const std::vector<T1>& a, const std::vector<T2>& b) -> decltype(T1()* T2()) {
 
-	if (a.size() != b.size()) {
-		throw std::invalid_argument("dot_product: Vectors must be of the same size.");
+template <typename T>
+void print_deque(std::deque<T> q, std::string s = "") {
+	std::cout << s << std::endl;
+	for (const T& data : q) std::cout << data << " ";
+	std::cout << std::endl;
+}
+
+
+
+int decode_header(int bit_num, std::deque<bool>& payload) {
+
+	int result = 0;
+	while (bit_num > 0) {
+		result = (result << 1) | payload.front();
+		payload.pop_front();
+		bit_num--;
 	}
-
-	using ResultType = decltype(T1()* T2());
-	ResultType result = ResultType();
-
-	for (size_t i = 0; i < a.size(); ++i) {
-		result += a[i] * b[i];
-	}
-
 	return result;
 }
 
-template <typename T>
-std::vector<T> queue_to_vector(std::queue<T> q) {
-	std::vector<T> v;
-	v.reserve(q.size());
-	while (!q.empty()) {
-		v.push_back(q.front());
-		q.pop();
-	}
-	return v;
-}
+void encode_header(int data, std::deque<bool>& payload, int bit_num) {
 
+	if (data >= 1 << bit_num) {
+		std::cerr << "Error: data exceeds the specified bit number." << std::endl;
+		return; 
+	}
+	while (data > 0 || bit_num > 0) {
+		payload.push_front(data & 1);
+		data = data >> 1; 
+		bit_num--;
+	}
+	return;
+}
 

@@ -5,11 +5,7 @@
 
 using namespace juce;
 
-#define PREAMBLE_LENGTH 440
-#define BITS_PER_FRAME 200
-#define SAMPLES_PER_BIT 12
-#define SILENCE_LENGTH 100
-#define FREQUENCY 8000
+
 
 std::vector<float> generateChirp() {
     float cycle = 1.0 / float(SAMPLE_RATE);
@@ -39,107 +35,50 @@ std::vector<float> generateSilence(int length) {
     return std::vector<float>(length, 0.0f);
 }
 
-std::vector<float> generateCarrierWave(int length) {
-    std::vector<float> carrier(length);
-    double omega = 2.0 * PI * FREQUENCY;
-    for (int i = 0; i < length; ++i) {
+std::vector<float> generateCarrierWave(int frequency) {
+    std::vector<float> carrier(SAMPLES_PER_BIT);
+    double omega = 2.0 * PI * frequency;
+    for (int i = 0; i < SAMPLES_PER_BIT; ++i) {
         double t = static_cast<double>(i) / SAMPLE_RATE;
         carrier[i] = static_cast<float>(sin(omega * t));
     }
     return carrier;
 }
 
-
-std::vector<float> PSK(const std::vector<bool>& frame, const std::vector<float>& carrier) {
-
-    int length = frame.size();
-    std::vector<float> modulated_signal(length * SAMPLES_PER_BIT);
-    int sample_idx = 0;
-    for (int i = 0; i < length; ++i) {
-        float symbol = frame[i] ? 1.0f : -1.0f;
-        for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
-            int idx = i * SAMPLES_PER_BIT + k;
-            modulated_signal[idx] = symbol * carrier[k];
-        }
-    }
-    return modulated_signal;
-}
-
-void push_vector(std::queue<float>& q, const std::vector<float>& v) {
+void push_vector(std::deque<float>& q, const std::vector<float>& v) {
     for (const auto& item : v) {
-        q.push(item);
+        q.push_back(item);
     }
 }
 
 
-void modulate(const std::vector<bool>& data, Mutex_FIFO<float>& sending_fifo) {
+class Modulator {
 
-    std::vector<float> chirp = generateChirp();
-    std::vector<float> silence = generateSilence(SILENCE_LENGTH);
-    std::vector<float> carrier = generateCarrierWave(SAMPLES_PER_BIT);
+private:
+	Mutex_FIFO<float>& sending_fifo;
+    
+    std::vector<float> chirp;
+    std::vector<float> carrier1;
+    std::vector<float> carrier2;
 
-    std::size_t total_bits = data.size();
-    std::queue<float> output_track;
-    int frame_num = (total_bits + BITS_PER_FRAME - 1) / BITS_PER_FRAME;
-    std::vector<float> warm_up = generateCarrierWave(10000);
-
-    auto frame_begin = data.begin();
-    for (int i = 0; i < frame_num; ++i) {
-
-        int length = BITS_PER_FRAME > total_bits ? total_bits : BITS_PER_FRAME;
-        total_bits -= length;
-        
-        push_vector(output_track, chirp);
-
-        std::vector<bool> frame(frame_begin, frame_begin + length);
-        frame_begin += length;
-
-        /*frame = hammingEncode(frame);
-        length = frame.size();
-
-        std::vector<bool> length_bits = dec2bin(length, LENGTH_BITS);
-        frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
-         
-        for (int i = 0; i < length; ++i) {
-            float symbol = frame[i] ? 1.0f : -1.0f;
-            for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
-                output_track.push(symbol * carrier[k]);
-            }
-        }
-        if (output_track.size() >= 2048) {
-            sending_fifo.push_batch(std::move(output_track));
-            std::queue<float> empty_queue;
-            std::swap(output_track, empty_queue);
-		}
+public:
+    Modulator(Mutex_FIFO<float>& Sending_FIFO) : 
+		sending_fifo(Sending_FIFO) {
+        chirp = generateChirp();
+        carrier1 = generateCarrierWave(FREQUENCY1);
+		carrier2 = generateCarrierWave(FREQUENCY2);
+        //std::vector<float> silence = generateSilence(SILENCE_LENGTH);
     }
-    sending_fifo.push_batch(output_track);
-    return;
-}
+    
+    void modulate(const std::deque<bool>& frame) {
 
-
-std::queue<float> modulate2queue(const std::vector<bool>& data) {
-
-    std::vector<float> chirp = generateChirp();
-    std::vector<float> silence = generateSilence(SILENCE_LENGTH);
-    std::vector<float> carrier = generateCarrierWave(SAMPLES_PER_BIT);
-
-    std::size_t total_bits = data.size();
-    int frame_num = (total_bits + BITS_PER_FRAME - 1) / BITS_PER_FRAME;
-
-    std::queue<float> output_track;
-    std::vector<float> warm_up = generateCarrierWave(10000);
-
-    push_vector(output_track, warm_up);
-
-    auto frame_begin = data.begin();
-    for (int i = 0; i < frame_num; ++i) {
-        int length = BITS_PER_FRAME > total_bits ? total_bits : BITS_PER_FRAME;
-        total_bits -= length;
-
+        std::deque<float> output_track;
         push_vector(output_track, chirp);
 
-        std::vector<bool> frame(frame_begin, frame_begin + length);
-        frame_begin += length;
+		std::deque<bool> frame_copy = frame;
+        //print_deque(frame, "Original Frame");
+        int length = frame_copy.size();
+		encode_header(length, frame_copy, LENGTH_BITS);
 
         /*frame = hammingEncode(frame);
         length = frame.size();
@@ -147,12 +86,31 @@ std::queue<float> modulate2queue(const std::vector<bool>& data) {
         std::vector<bool> length_bits = dec2bin(length, LENGTH_BITS);
         frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
 
-        for (int i = 0; i < length; ++i) {
-            float symbol = frame[i] ? 1.0f : -1.0f;
+        length += LENGTH_BITS;
+        int i = 0;
+        while (i < length)
+        {
+            float symbol1 = frame_copy[i++] ? 1.0f : -1.0f;
+            float symbol2 = 10.0f;
+            if (i < length) symbol2 = frame_copy[i++] ? 1.0f : -1.0f;
             for (int k = 0; k < SAMPLES_PER_BIT; ++k) {
-                output_track.push(symbol * carrier[k]);
+                float modulated_carrier = symbol1 * carrier1[k];
+                if (symbol2 < 5.0f)
+					modulated_carrier += symbol2 * carrier2[k];
+                output_track.push_back(modulated_carrier);
             }
         }
+        //std::cout << std::endl;
+
+		sending_fifo.push_batch(std::move(output_track));
+        return;
     }
-    return output_track;
-}
+};
+
+
+
+
+
+
+
+

@@ -103,6 +103,27 @@ public:
         }
     }
 
+    void push_batch(const std::deque<T>& source) {
+        if (source.empty()) return;
+
+        std::lock_guard<std::mutex> lock(mtx_);
+        // 利用 std::deque 的 insert 方法，从一个 deque 插入到另一个 deque 的末尾
+        data_.insert(data_.end(), source.begin(), source.end());
+    }
+
+    // 从 std::deque<T> 批量推入 (移动)
+    void push_batch(std::deque<T>&& source) {
+        if (source.empty()) return;
+
+        std::lock_guard<std::mutex> lock(mtx_);
+        // 利用 std::move_iterator 将源 deque 的元素移动到目标 deque 中
+        data_.insert(data_.end(),
+            std::make_move_iterator(source.begin()),
+            std::make_move_iterator(source.end()));
+        // 移动后，source 内部状态不确定，最好清空它
+        source.clear();
+    }
+
     // --- 批量弹出操作 ---
 
     size_t pop_batch(std::vector<T>& dest, size_t max_count) {
@@ -154,6 +175,27 @@ public:
         return actual_count;
     }
 
+    size_t pop_batch(std::deque<T>& dest, size_t max_count) {
+        if (max_count == 0) return 0;
+
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (data_.empty()) return 0;
+
+        // 计算实际要弹出的元素数量
+        size_t actual_count = std::min(max_count, data_.size());
+
+        // 从 data_ 的开头，移动 actual_count 个元素到 dest 的末尾
+        // std::make_move_iterator 确保了如果 T 支持移动，就会使用移动而非拷贝
+        dest.insert(dest.end(),
+            std::make_move_iterator(data_.begin()),
+            std::make_move_iterator(std::next(data_.begin(), actual_count)));
+
+        // 从 data_ 的开头删除已弹出的元素
+        data_.erase(data_.begin(), std::next(data_.begin(), actual_count));
+
+        return actual_count;
+    }
+
     // 调试用：打印队列内容
     void print_queue() const {
         std::lock_guard<std::mutex> lock(mtx_);
@@ -174,8 +216,6 @@ public:
         return data_;
 	}
 };
-
-
 
 
 bool checkQueue(std::deque<float> queue, std::queue<float> queue2) {
