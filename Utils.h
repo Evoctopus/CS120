@@ -7,9 +7,10 @@
 #include <cstring>
 #include <queue>
 #include <chrono>
+#include <format>
 
 
-
+#define ADDRESS 1
 #define SAMPLE_RATE 96000
 #define PI acos(-1)
 
@@ -22,22 +23,20 @@
 #define FREQUENCY2 16000
 
 #define LENGTH_BITS 8
-#define LENGTH_FIELD_SIZE (LENGTH_BITS + 1) / 2 * SAMPLES_PER_BIT
 
 /*-------------MAC---------------*/
 #define DEST_BITS 1
 #define SRC_BITS 1
 #define TYPE_BITS 1
 #define CRC_BITS 8
-#define ADDRESS 1
-
 #define FRAME_SEQUENCY_BITS 8
-#define MAX_RESEND 5
 
-#define SWS 50
-#define RWS 50
+#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS+CRC_BITS+ FRAME_SEQUENCY_BITS
 
-#define TIMEOUT_MS 1000
+#define MAX_RESEND 10
+#define SWS 1
+#define RWS 1
+#define TIMEOUT_MS 500
 
 
 std::vector<bool> dec2bin(int num, int length) {
@@ -111,6 +110,12 @@ void print_deque(std::deque<T> q, std::string s = "") {
 
 int decode_header(int bit_num, std::deque<bool>& payload) {
 
+	if (payload.size() < bit_num)
+	{
+		printf("Cannot decode %d bits from %d frame\n", bit_num, payload.size());
+		exit(-1);
+	}
+
 	int result = 0;
 	while (bit_num > 0) {
 		result = (result << 1) | payload.front();
@@ -132,5 +137,29 @@ void encode_header(int data, std::deque<bool>& payload, int bit_num) {
 		bit_num--;
 	}
 	return;
+}
+
+template<typename... Args>
+std::string format(Args&&... args) {
+	std::ostringstream oss;
+	(oss << ... << std::forward<Args>(args));
+	return oss.str();
+}
+
+
+void compare(const std::vector<bool>& output, const std::vector<bool>& input) {
+	size_t len1 = output.size();
+	size_t len2 = input.size();
+	printf("Comparing output with length %d and input with length %d\n", len1, len2);
+
+	int matched = 0;
+	for (size_t i = 0; i < len2; ++i) {
+		if (i >= len1) break;
+		if (output[i] == input[i]) {
+			matched++;
+		}
+	}
+	printf("Matched: %d/%d\n", matched, len2);
+	printf("Accuracy: %f\%\n", 1.0f * matched / len2);
 }
 

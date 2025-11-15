@@ -12,12 +12,25 @@
 
 using namespace juce;
 
+Mutex_FIFO<float> Sending_FIFO, Receiving_FIFO;
+Mutex_FIFO<std::deque<bool>> MAC_FIFO;
+Mutex_FIFO<bool> App_FIFO;
+std::atomic<bool> channel_is_idle;
+
 void initialize_dev_manager(AudioDeviceManager& dev_manager) {
     dev_manager.initialiseWithDefaultDevices(1, 1);
     AudioDeviceManager::AudioDeviceSetup dev_info;
     dev_info = dev_manager.getAudioDeviceSetup();
     dev_info.sampleRate = SAMPLE_RATE;
     dev_manager.setAudioDeviceSetup(dev_info, false);
+}
+
+void flatten_MAC() {
+    std::deque<bool> signal;
+    while (MAC_FIFO.pop(signal)) {
+        App_FIFO.push_batch(signal);
+    }
+    return;
 }
 
 int main(int argc, char* argv[])
@@ -28,14 +41,12 @@ int main(int argc, char* argv[])
     int transmit;
     char c;
 
+    printf("Welcome! Your IP: %d\n", ADDRESS);
+    std::cout << "Press xxx to transmit to IPxxx, If xxx is invalid, nothing will be sent" << std::endl;
+
     std::cin >> transmit;
 
-	std::cout << "Press any key to stop..." << std::endl;
-
-    Mutex_FIFO<float> Sending_FIFO, Receiving_FIFO;
-    Mutex_FIFO<std::deque<bool>> MAC_FIFO;
-    Mutex_FIFO<bool> App_FIFO;
-    std::atomic<bool> channel_is_idle;
+    
 
 	Demodulator demodulator(Receiving_FIFO, MAC_FIFO);
 	Modulator modulator(Sending_FIFO);
@@ -47,29 +58,32 @@ int main(int argc, char* argv[])
     demodulator.startThread();
     mac.startThread();
     
-
-	auto frame_begin = data.begin();
-    //for (int i=0; i<20; ++i)
-    while (frame_begin < data.end()) 
+    if (transmit == 1 || transmit == 0)
     {
+        auto frame_begin = data.begin();
+        //for (int i=0; i<1; ++i)
+        while (frame_begin < data.end())
+        {
 
-        auto frame_end = frame_begin + BITS_PER_FRAME;
-        if (frame_end > data.end()) frame_end = data.end();
-        std::deque<bool> frame(frame_begin, frame_end);
+            auto frame_end = frame_begin + BITS_PER_FRAME;
+            if (frame_end > data.end()) frame_end = data.end();
+            std::deque<bool> frame(frame_begin, frame_end);
 
-        //modulator.modulate(frame);
-        while (!mac.send_data(frame, 1)) {}
-        frame_begin = frame_end;
-	}
-
+            //modulator.modulate(frame);
+            while (!mac.send_data(frame, transmit)) {}
+            frame_begin = frame_end;
+        }
+    }
     //mac.send_ACK(1);
 	std::cin >> c;
+    //demodulator.Decode(Receiving_FIFO.vectorize());
     dev_manager.removeAudioCallback(&audio_device);
-	//demodulator.Decode(Receiving_FIFO.vectorize());
     demodulator.signalThreadShouldExit();
     mac.signalThreadShouldExit();
 
-    writeToFile(App_FIFO.vectorize(), "output.txt", '0');
+    //flatten_MAC();
+    compare(App_FIFO.vectorize(), data);
+    //writeToFile(App_FIFO.vectorize(), "output.txt", '0');
 
     return 0;
 }
