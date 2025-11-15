@@ -62,11 +62,11 @@ int main(int argc, char* argv[])
     /*auto now = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     std::cout << "当前时间点（毫秒）: " << ms << std::endl;
-    std::deque<bool> frame(50, false);
+    std::deque<bool> frame = generateRandomBits(BITS_PER_FRAME);
     mac.send_data(frame, transmit);*/
     
     
-    int seconds = generate_random_backoff(6, 10);
+    int seconds = 5;
     printf("Wait for %d seconds\n", seconds);
     std::this_thread::sleep_for(std::chrono::seconds(seconds));
     if (transmit == 1 || transmit == 0)

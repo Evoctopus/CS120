@@ -7,17 +7,10 @@
 
 #include "Logger.h"
 
+# define MAX_BACK_OFF 400
+# define BASE_BACK_OFF 50
 
-int generate_random_backoff(int min = 10, int max = 100) {
-
-
-	std::random_device rd;
-	std::mt19937 gen(rd());
-	std::uniform_int_distribution<> distrib(min, max);
-
-	return distrib(gen);
-}
-
+ 
 class MAC : public juce::Thread
 {
 
@@ -36,7 +29,21 @@ private:
 		std::optional<std::chrono::time_point<std::chrono::steady_clock>> last_try;
 		int resend_count;
 		int backoff_time;
+		int retry_count;
 		int sequence_num;
+
+		void generate_random_backoff() {
+
+			std::random_device rd;
+			std::mt19937 gen(rd());
+
+			retry_count++;
+			int max = std::min(BASE_BACK_OFF << retry_count, MAX_BACK_OFF);
+			
+			std::uniform_int_distribution<> distrib(BASE_BACK_OFF, max);
+			last_try = std::chrono::steady_clock::now();
+			backoff_time = distrib(gen);
+		}
 	};
 	int  LAR = 0, LFS = 0;
 	Frame sent_frames[SWS]; 
@@ -47,12 +54,13 @@ private:
 
 	std::atomic<bool> ack_pending;
 	int ack_backoff;
-	std::chrono::time_point<std::chrono::steady_clock> ack_send_time;
+
 	int DEST;
 
 	struct ReceivedFrame {
 		std::deque<bool> data;
 		int seq_num = 0;
+
 	};
 	ReceivedFrame received_frames[RWS];
 	int LFR = 0;
@@ -73,11 +81,13 @@ private:
 		return seq_num > LFR && seq_num <= LFR + RWS;
 	}
 
+	
+
 	void check_timeouts() {
-		ack_send_time = std::chrono::steady_clock::now();
+
 		while (!stop_timeout_thread) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
-			std::lock_guard<std::mutex> lock(mtx);
+			//std::lock_guard<std::mutex> lock(mtx);
 			auto now = std::chrono::steady_clock::now();
 			for (int i = LAR + 1; i <= LFS; ++i) {
 				int idx = i % SWS;
@@ -93,10 +103,9 @@ private:
 							sending_logger.log_message(format("Link Error"));
 							exit(-1);
 						}
-						frame.backoff_time = 0;
 						frame.send_time.reset();
-						frame.last_try.reset();
 						frame.resend_count++;
+						frame.generate_random_backoff();
 						sending_logger.log_message(format("Resending Frame", frame.sequence_num, " for ", frame.resend_count, " times"));
 					}
 				}
@@ -128,20 +137,20 @@ private:
 	void try_to_send(Frame& frame) {
 		sending_logger.log_message(format("Want to send Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
 
-		auto now = std::chrono::steady_clock::now();
-		sending_logger.log_message(format("Start listening 100 ms"));
+		auto start_time = std::chrono::steady_clock::now();
+		sending_logger.log_message(format("Start listening 400 ms"));
+		auto now = start_time;
 
-		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - now).count() <= 100)
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() <= 400)
 		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			now = std::chrono::steady_clock::now();
 			if (!channel_is_idle) {
-				frame.backoff_time = generate_random_backoff();
+				frame.generate_random_backoff();
 				sending_logger.log_message(format("Channel Busy, Frame", frame.sequence_num, " Waiting for", frame.backoff_time, " ms"));
-				frame.last_try = now;
 				return;
 			}
 		}
-
+		now = std::chrono::steady_clock::now();
 		modulator.modulate(frame.data);
 		frame.send_time = now;
 		//debug_log(1);
@@ -191,6 +200,8 @@ public:
 		frame.resend_count = 0;
 		frame.backoff_time = 0;
 		frame.sequence_num = LFS;
+		frame.retry_count = 0;
+		frame.last_try = std::chrono::steady_clock::now();
 
 		/*auto now = std::chrono::steady_clock::now();
 		frame.send_time = now;
@@ -198,7 +209,7 @@ public:
 		
 		int idx = LFS % SWS;
 		sent_frames[idx] = std::move(frame);
-		sending_logger.log_message(format("Adding Frame",LFS, " to sliding window "));
+		sending_logger.log_message(format("Adding Frame", LFS, " to sliding window "));
 		return true;
 	}
 
@@ -207,7 +218,6 @@ public:
 		std::lock_guard<std::mutex> lock(mtx);  
 
 		ack_received++;
-		// 检查 ACK 是否有效（确认号是否在已发送但未确认的范围内）
 		if (!is_ack_valid(ack_num)) {
 			sending_logger.log_message(format("ACK", ack_num, " Out of Range (", LAR, ", ", LFS,")"));
 			return;

@@ -47,7 +47,7 @@ public:
             frame_buffer.push_back(sample);
         }
         power /= numSamples;
-        if (power >= 0.05f) channel_is_idle = false;
+        if (power >= 0.01f) channel_is_idle = false;
         else channel_is_idle = true;
         power_debug.push_back(power);
 

@@ -36,7 +36,7 @@
 #define MAX_RESEND 10
 #define SWS 1
 #define RWS 1
-#define TIMEOUT_MS 500
+#define TIMEOUT_MS 200
 
 
 std::vector<bool> dec2bin(int num, int length) {
