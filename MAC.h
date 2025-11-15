@@ -196,6 +196,8 @@ public:
 		frame.backoff_time = 0;
 		frame.sequence_num = LFS;
 
+		auto now = std::chrono::steady_clock::now();
+		frame.send_time = now;
 		modulator.modulate(frame.data);
 		
 		int idx = LFS % SWS;
@@ -255,7 +257,6 @@ public:
 				LFR = i;
 			}
 		}
-		printf("%d", sequence_num);
 		receiving_logger.log_message(format("Frame", sequence_num, " accepted, updating LFR and try to send ACK ", LFR));
 		send_ACK(src, LFR);	
 		return;

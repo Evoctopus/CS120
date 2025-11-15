@@ -57,6 +57,8 @@ int main(int argc, char* argv[])
     dev_manager.addAudioCallback(&audio_device);
     demodulator.startThread();
     mac.startThread();
+
+    
     
     if (transmit == 1 || transmit == 0)
     {
@@ -64,9 +66,10 @@ int main(int argc, char* argv[])
         //for (int i=0; i<1; ++i)
         while (frame_begin < data.end())
         {
-
-            auto frame_end = frame_begin + BITS_PER_FRAME;
-            if (frame_end > data.end()) frame_end = data.end();
+            auto remaining_bits = std::distance(frame_begin, data.end());
+            size_t frame_size = static_cast<size_t>(std::min(remaining_bits, static_cast<decltype(remaining_bits)>(BITS_PER_FRAME)));
+            auto frame_end = frame_begin;
+            std::advance(frame_end, frame_size);
             std::deque<bool> frame(frame_begin, frame_end);
 
             //modulator.modulate(frame);

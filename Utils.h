@@ -16,13 +16,13 @@
 
 
 #define PREAMBLE_LENGTH 240
-#define BITS_PER_FRAME 200
-#define SAMPLES_PER_BIT 12
+#define BITS_PER_FRAME 800
+#define SAMPLES_PER_BIT 6
 #define SILENCE_LENGTH 100
 #define FREQUENCY1 8000
 #define FREQUENCY2 16000
 
-#define LENGTH_BITS 8
+#define LENGTH_BITS 10
 
 /*-------------MAC---------------*/
 #define DEST_BITS 1
