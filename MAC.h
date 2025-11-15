@@ -8,14 +8,22 @@
 #include "Logger.h"
 
 
+int generate_random_backoff(int min = 10, int max = 100) {
+
+
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<> distrib(min, max);
+
+	return distrib(gen);
+}
+
 class MAC : public juce::Thread
 {
 
 private:
 
 	Log_Handlr sending_logger, receiving_logger;
-
-
 
 	Mutex_FIFO<std::deque<bool>>& mac_fifo;
 	Mutex_FIFO<bool>& output_fifo;
@@ -65,15 +73,6 @@ private:
 		return seq_num > LFR && seq_num <= LFR + RWS;
 	}
 
-	int generate_random_backoff(int min = 10, int max = 100) const {
-		
-		static std::mt19937 generator;
-
-		std::uniform_int_distribution<int> distribution(min, max);
-
-		return distribution(generator);
-	}
-
 	void check_timeouts() {
 		ack_send_time = std::chrono::steady_clock::now();
 		while (!stop_timeout_thread) {
@@ -89,7 +88,6 @@ private:
 					if (duration.count() >= TIMEOUT_MS) {
 						//debug_log(1);
 						//printf("Resending Frame%d for %d times\n", frame.sequence_num, frame.resend_count);
-						sending_logger.log_message(format("Resending Frame",frame.sequence_num, " for ", frame.resend_count, " times"));
 						if (frame.resend_count >= MAX_RESEND) {
 							std::cerr << "[Sender] Link Error\n";
 							sending_logger.log_message(format("Link Error"));
@@ -99,63 +97,56 @@ private:
 						frame.send_time.reset();
 						frame.last_try.reset();
 						frame.resend_count++;
+						sending_logger.log_message(format("Resending Frame", frame.sequence_num, " for ", frame.resend_count, " times"));
 					}
 				}
-				/*else if (frame.last_try.has_value()) {
+				else if (frame.last_try.has_value()) {
 					auto time = frame.last_try.value();
 					auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - time);
 					if (duration.count() >= frame.backoff_time) {
 						try_to_send(frame);
 					}
 				}
-				else try_to_send(frame);*/
+				else try_to_send(frame);
 			}
 
-			if (ack_pending && channel_is_idle) {
+			/*if (ack_pending && channel_is_idle) {
 				receiving_logger.log_message(format("Channel is free, send ACK", LFR));
 				std::deque<bool> ack_frame;
 				encode_mac_header(ack_frame, 0, DEST, LFR);
 				modulator.modulate(ack_frame);
 				ack_pending = false;
-			}
+			}*/
 
 			if (!Complete && LFR == 250) {
 				Complete = true;
 				printf("Received complete!\n");
 			}
-
-			/*if (DEST == -1) continue;
-			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - ack_send_time);
-			if (duration.count() >= ack_backoff) {
-				ack_send_time = now;
-				ack_backoff = generate_random_backoff(200, 300);
-				if (channel_is_idle) {
-					std::deque<bool> ack_frame;
-					encode_mac_header(ack_frame, 0, DEST, LFR);
-					modulator.modulate(ack_frame);
-					printf("Receiver[]: Sending ACK, SeqNum: %d TO %d\n", LFR, DEST);
-				}
-			}*/
 		}
 	}
 
 	void try_to_send(Frame& frame) {
 		sending_logger.log_message(format("Want to send Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
+
 		auto now = std::chrono::steady_clock::now();
-		if (channel_is_idle) {
-			modulator.modulate(frame.data);
-			frame.send_time = now;
-			//debug_log(1);
-			//std::cout << "Channel Free, Sending Frame" << frame.sequence_num << " Length=" << frame.data.size() << " bits" << "\n";
-			sending_logger.log_message(format("Channel Free, Sending Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
+		sending_logger.log_message(format("Start listening 100 ms"));
+
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - now).count() <= 100)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			if (!channel_is_idle) {
+				frame.backoff_time = generate_random_backoff();
+				sending_logger.log_message(format("Channel Busy, Frame", frame.sequence_num, " Waiting for", frame.backoff_time, " ms"));
+				frame.last_try = now;
+				return;
+			}
 		}
-		else {
-			frame.backoff_time = generate_random_backoff();
-			//debug_log(1);
-			//std::cout << "Channel Busy, Frame" << frame.sequence_num << " Waiting for" << frame.backoff_time << " ms\n";
-			sending_logger.log_message(format("Channel Busy, Frame", frame.sequence_num, " Waiting for", frame.backoff_time, " ms"));
-			frame.last_try = now;
-		}
+
+		modulator.modulate(frame.data);
+		frame.send_time = now;
+		//debug_log(1);
+		//std::cout << "Channel Free, Sending Frame" << frame.sequence_num << " Length=" << frame.data.size() << " bits" << "\n";
+		sending_logger.log_message(format("Channel Free, Sending Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
 	}
 
 public:
@@ -172,6 +163,11 @@ public:
 		if (timeout_thread.joinable()) {
 			timeout_thread.join();
 		}
+	}
+
+	int get_window_size(int left, int right, int max_seq) {
+		if (left <= right) return right - left;
+		else return max_seq - (left - right);
 	}
 
 	bool send_data(const std::deque<bool>& data, int dest) {
@@ -196,9 +192,9 @@ public:
 		frame.backoff_time = 0;
 		frame.sequence_num = LFS;
 
-		auto now = std::chrono::steady_clock::now();
+		/*auto now = std::chrono::steady_clock::now();
 		frame.send_time = now;
-		modulator.modulate(frame.data);
+		modulator.modulate(frame.data);*/
 		
 		int idx = LFS % SWS;
 		sent_frames[idx] = std::move(frame);
@@ -218,6 +214,11 @@ public:
 		}
 		LAR = ack_num;
 		sending_logger.log_message(format("Received ACK", ack_num, " received, updating LAR to ", LAR));
+
+		/*auto now = std::chrono::steady_clock::now();
+		auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+		std::cout << "当前时间点（毫秒）: " << ms << std::endl;
+		exit(-1);*/
 	}
 
 	void debug_log(int type) {

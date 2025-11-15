@@ -57,13 +57,22 @@ int main(int argc, char* argv[])
     dev_manager.addAudioCallback(&audio_device);
     demodulator.startThread();
     mac.startThread();
+    
 
+    /*auto now = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    std::cout << "当前时间点（毫秒）: " << ms << std::endl;
+    std::deque<bool> frame(50, false);
+    mac.send_data(frame, transmit);*/
     
     
+    int seconds = generate_random_backoff(6, 10);
+    printf("Wait for %d seconds\n", seconds);
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
     if (transmit == 1 || transmit == 0)
     {
         auto frame_begin = data.begin();
-        //for (int i=0; i<1; ++i)
+        //for (int i=0; i<10; ++i)
         while (frame_begin < data.end())
         {
             auto remaining_bits = std::distance(frame_begin, data.end());
@@ -77,7 +86,7 @@ int main(int argc, char* argv[])
             frame_begin = frame_end;
         }
     }
-    //mac.send_ACK(1);
+
 	std::cin >> c;
     //demodulator.Decode(Receiving_FIFO.vectorize());
     dev_manager.removeAudioCallback(&audio_device);
@@ -87,6 +96,6 @@ int main(int argc, char* argv[])
     //flatten_MAC();
     compare(App_FIFO.vectorize(), data);
     //writeToFile(App_FIFO.vectorize(), "output.txt", '0');
-
+    
     return 0;
 }

@@ -106,8 +106,6 @@ public:
         }
         return output_track;
     }
-
-
     
     void modulate(std::deque<bool> frame) {
 

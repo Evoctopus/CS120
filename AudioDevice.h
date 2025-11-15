@@ -22,7 +22,6 @@ public:
     void audioDeviceStopped() override {
         writeToFile(frame_buffer, "received_signal.txt", '\n');
         writeToFile(power_debug, "power.txt", '\n');
-
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -48,7 +47,7 @@ public:
             frame_buffer.push_back(sample);
         }
         power /= numSamples;
-        if (power >= 0.2f) channel_is_idle = false;
+        if (power >= 0.05f) channel_is_idle = false;
         else channel_is_idle = true;
         power_debug.push_back(power);
 
