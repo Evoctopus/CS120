@@ -16,11 +16,13 @@ public:
     std::vector<float> frame_buffer;
 
     AudioDevice(Mutex_FIFO<float>& Sending_FIFO, Mutex_FIFO<float>& Receiving_FIFO, std::atomic<bool>& Channel_is_idle) :
-		sending_fifo(Sending_FIFO), receiving_fifo(Receiving_FIFO), channel_is_idle(Channel_is_idle) {}
+		sending_fifo(Sending_FIFO), receiving_fifo(Receiving_FIFO), channel_is_idle(Channel_is_idle) {
+		power_debug.resize(1000000);
+    }
 
     void audioDeviceAboutToStart(AudioIODevice* device) override {}
     void audioDeviceStopped() override {
-        writeToFile(frame_buffer, "received_signal.txt", '\n');
+        //writeToFile(frame_buffer, "received_signal.txt", '\n');
         writeToFile(power_debug, "power.txt", '\n');
     }
 
@@ -44,11 +46,12 @@ public:
         for (int i = 0; i < numSamples; ++i) {
             float sample = inputChannelData[0][i];
             power += sample * sample;
-            frame_buffer.push_back(sample);
+            //frame_buffer.push_back(sample);
         }
         power /= numSamples;
         if (power >= 0.01f) channel_is_idle = false;
         else channel_is_idle = true;
+        power_debug.erase(power_debug.begin());
         power_debug.push_back(power);
 
     }

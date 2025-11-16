@@ -10,7 +10,7 @@
 #include <format>
 
 
-#define ADDRESS 1
+#define ADDRESS 0
 #define SAMPLE_RATE 96000
 #define PI acos(-1)
 

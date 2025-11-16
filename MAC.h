@@ -37,7 +37,7 @@ private:
 			std::random_device rd;
 			std::mt19937 gen(rd());
 
-			retry_count++;
+			retry_count = std::min(retry_count + 1, 5);
 			int max = std::min(BASE_BACK_OFF << retry_count, MAX_BACK_OFF);
 			
 			std::uniform_int_distribution<> distrib(BASE_BACK_OFF, max);
@@ -141,7 +141,7 @@ private:
 		sending_logger.log_message(format("Start listening 400 ms"));
 		auto now = start_time;
 
-		while (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() <= 400)
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() <= 50)
 		{
 			now = std::chrono::steady_clock::now();
 			if (!channel_is_idle) {
