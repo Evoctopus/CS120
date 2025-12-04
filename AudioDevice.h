@@ -17,7 +17,7 @@ public:
 
     AudioDevice(Mutex_FIFO<float>& Sending_FIFO, Mutex_FIFO<float>& Receiving_FIFO, std::atomic<bool>& Channel_is_idle) :
 		sending_fifo(Sending_FIFO), receiving_fifo(Receiving_FIFO), channel_is_idle(Channel_is_idle) {
-		power_debug.resize(1000000);
+		power_debug.resize(100000);
     }
 
     void audioDeviceAboutToStart(AudioIODevice* device) override {}
@@ -39,9 +39,8 @@ public:
             outputChannelData[0][i] = 0.0f; 
 		}
 		//printf("Sent %zu samples\n", samples);
+        
         receiving_fifo.push_batch(inputChannelData[0], numSamples);
-
-
         float power = 0.0f;
         for (int i = 0; i < numSamples; ++i) {
             float sample = inputChannelData[0][i];
@@ -49,7 +48,9 @@ public:
             //frame_buffer.push_back(sample);
         }
         power /= numSamples;
-        if (power >= 0.01f) channel_is_idle = false;
+        if (power >= 0.01f) {
+            channel_is_idle = false;
+        }
         else channel_is_idle = true;
         power_debug.erase(power_debug.begin());
         power_debug.push_back(power);

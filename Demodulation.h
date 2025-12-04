@@ -1,9 +1,8 @@
 #pragma once
-
-
 #include "Utils.h"
 #include "Modulation.h"
 #include "Mutex_FIFO.h"
+#include "MAC.h"
 
 using namespace juce;
 
@@ -33,6 +32,8 @@ class Demodulator : public juce::Thread {
 
 private:
 
+    Log_Handlr demodulating_logger;
+    
     int time = 0;
     Mutex_FIFO<float> &receiving_fifo;
     Mutex_FIFO<std::deque<bool>> &mac_fifo;
@@ -68,17 +69,16 @@ public:
         chirp = generateChirp();
         carrier1 = generateCarrierWave(FREQUENCY1);
 		carrier2 = generateCarrierWave(FREQUENCY2);
+
+        demodulating_logger.init("Demodulating Log.log");
     }
 
     void writeLog(bool append = false) {
 
-        
-        //Decode();
-		//printf("writing log...\n");
         writeToFile(frame_buffer, "received_signal.txt", '\n', append);
         writeToFile(syncPower_debug, "sync_power.txt", '\n', append);
         writeToFile(power_debug, "power.txt", '\n');
-        printf("Frame %d decoded\n", frame_detected);
+        
         //writeToFile(start_index_debug, "start_index.txt", '\n');
         //writeToFile(windows, "windows.txt", '\n');
         //writeToFile(demodulated_debug, "demodulated.txt", '\n');
@@ -96,10 +96,10 @@ public:
         while (!threadShouldExit()) {
 
             if (receiving_fifo.pop(current_sample)) {
-                frame_buffer.push_back(current_sample);
+                //frame_buffer.push_back(current_sample);
                 
-                power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
-                power_debug.push_back(power);
+                //power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
+                //power_debug.push_back(power);
 
                 if (state == SYNC) {
 
@@ -112,7 +112,7 @@ public:
                         syncPower += syncFIFO[j] * chirp[j];
                     }
 					syncPower /= 100.0f;
-                    syncPower_debug.push_back(syncPower);
+                    //syncPower_debug.push_back(syncPower);
 
                     if (syncPower > syncPower_localMax && syncPower > SYNC_POWER_BOARDER){
                         syncPower_localMax = syncPower;
@@ -120,9 +120,11 @@ public:
                         decodedFIFO.clear();
                     }
                     else if ((time - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
-                        printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
+                        demodulating_logger.log_message(format("Preamble detected at index ", start_index, ", sync power: ", syncPower_localMax));
+                        //printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
                         syncPower_localMax = 0.0f;
                         start_index = 0;
+                        time = 0;
                         std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
                         state = DECODE;
                         frame_detected++;
@@ -130,7 +132,7 @@ public:
                 }
                 else if (state == DECODE) {
 
-                    syncPower_debug.push_back(0.0f);
+                    //syncPower_debug.push_back(0.0f);
                     decodedFIFO.push_back(current_sample);
                     size_t decoded_size = decodedFIFO.size();
 
@@ -142,6 +144,7 @@ public:
                         std::deque<bool> decoded_bits = extract_data_LC(length_field, LENGTH_BITS);
                         frame_length = decode_header(LENGTH_BITS, decoded_bits);
                         decoded_size -= get_sample_length(LENGTH_BITS);
+                        demodulating_logger.log_message(format("Frame length ", frame_length));
                         //printf("Frame length %d\n", frame_length);
                     }
                     if (frame_length != 0 && decoded_size >= get_sample_length(frame_length)) {
@@ -155,7 +158,8 @@ public:
                 time++;
             }
         }
-        writeLog();
+        printf("Frame %d decoded\n", frame_detected);
+        //writeLog();
     }
 
     std::deque<bool> extract_data_PSK(const std::deque<float>& signal, int bit_num) {
@@ -201,76 +205,5 @@ public:
             decoded_bits.push_back(bit_power > 0.0f);
         }
         return decoded_bits;
-    }
-
-
-
-    void Decode(const std::vector<float>& data) {
-
-        int length = data.size();
-        std::vector<bool> decoded_bits;
-        for (int i = 0; i < length; ++i) {
-
-            float current_sample = data[i];
-            power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
-
-            power_debug.push_back(power);
-            syncPower_debug.push_back(0.0f);
-
-            if (state == SYNC) {
-
-
-                syncFIFO.erase(syncFIFO.begin());
-                syncFIFO.push_back(current_sample);
-
-                decodedFIFO.push_back(current_sample);
-
-                float syncPower = 0.0f;
-                for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
-                    syncPower += syncFIFO[j] * chirp[j];
-                }
-                syncPower /= 100.0f;
-                syncPower_debug[i] = syncPower;
-
-                if (syncPower > syncPower_localMax && syncPower > SYNC_POWER_BOARDER) {
-                    syncPower_localMax = syncPower;
-                    start_index = i;
-                    decodedFIFO.clear();
-                }
-                else if ((i - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
-                    printf("Preamble detected at index %d, sync power: %f\n", start_index, syncPower_localMax);
-                    syncPower_localMax = 0.0f;
-                    start_index = 0;
-                    std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
-                    state = DECODE;
-                    frame_detected++;
-                }
-            }
-            else if (state == DECODE) {
-                syncPower_debug.push_back(0.0f);
-                decodedFIFO.push_back(current_sample);
-                size_t decoded_size = decodedFIFO.size();
-
-                if (decoded_size >= get_sample_length(LENGTH_BITS) && frame_length == 0) {
-                    auto end = decodedFIFO.begin() + get_sample_length(LENGTH_BITS);
-                    std::deque<float> length_field(decodedFIFO.begin(), end);
-                    decodedFIFO.erase(decodedFIFO.begin(), end);
-                    printf("start decoding length\n");
-                    std::deque<bool> decoded_bits = extract_data_LC(length_field, LENGTH_BITS);
-                    frame_length = decode_header(LENGTH_BITS, decoded_bits);
-                    decoded_size -= get_sample_length(LENGTH_BITS);
-                    printf("Frame length %d\n", frame_length);
-                }
-                if (frame_length != 0 && decoded_size >= get_sample_length(frame_length)) {
-                    std::deque<bool> decoded_bits = extract_data_LC(decodedFIFO, frame_length);
-                    mac_fifo.push(std::move(decoded_bits));
-                    decodedFIFO.clear();
-                    state = SYNC;
-                    frame_length = 0;
-                }
-            }
-        }
-        printf("Decoded done, find %d frames \n", frame_detected);
-        writeLog();
     }
 };
