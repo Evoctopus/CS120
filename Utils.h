@@ -1,5 +1,10 @@
 #pragma once
 
+#define NOMINMAX
+#include <winsock2.h>
+#pragma comment(lib, "wpcap.lib")
+#pragma comment(lib, "ws2_32.lib")
+
 #include <JuceHeader.h>
 #include <vector>
 #include <random>
@@ -9,6 +14,11 @@
 #include <chrono>
 #include <format>
 #include <algorithm>
+#include <pcap.h>
+#include "Bimap.h"
+#include "Mutex_FIFO.h"
+#include "CRC.h"
+#include "Logger.h"
 
 
 #define SAMPLE_RATE 96000
@@ -24,18 +34,33 @@
 
 #define LENGTH_BITS 10
 
-/*-------------MAC---------------*/
-#define DEST_BITS 2
-#define SRC_BITS 2
-#define TYPE_BITS 1
-#define CRC_BITS 8
-#define FRAME_SEQUENCY_BITS 8
 
-#define MAC_HEADER_LENGTH DEST_BITS + SRC_BITS + TYPE_BITS + FRAME_SEQUENCY_BITS
-#define MAX_RESEND 20
-#define SWS 1
-#define RWS 1
-#define TIMEOUT_MS 200
+struct ThreadFlag {
+	std::mutex mtx;                  // 互斥锁，保护条件变量和共享标志
+	std::condition_variable cv;      // 条件变量，用于唤醒线程
+	bool wakeup = false;          // 唤醒标志（核心：等待的“条件”）
+
+	void sleep() {
+		std::unique_lock<std::mutex> lock(mtx);
+		cv.wait(lock, [this]() { return wakeup; });
+	}
+
+	void wake_up() {
+		std::lock_guard<std::mutex> lock(mtx);
+		wakeup = true;
+		cv.notify_one();
+	}
+
+	void reset() {
+		wakeup = false;
+	}
+};
+
+
+uint64_t get_timestamp_milliseconds() {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+}
 
 std::vector<bool> readBinFile(const std::string& filename) {
 	// 以二进制模式打开文件
@@ -280,3 +305,110 @@ int mac_str_to_uint8(const char* mac_str, uint8_t out_mac[6]) {
 	return 0;
 }
 
+
+size_t deque_bool_to_uint8(
+	const std::deque<bool>& bool_deque,
+	uint8_t out_bytes[1514],
+	bool big_endian = false
+) {
+
+	// 1. 参数合法性校验
+	if (bool_deque.empty()) {
+		fprintf(stderr, "Error: Input deque is empty\n");
+		return 0;
+	}
+	if (out_bytes == nullptr) {
+		fprintf(stderr, "Error: out_bytes is null pointer\n");
+		return 0;
+	}
+	memset(out_bytes, 0, 1514);
+
+	uint8_t current_byte = 0; // 临时存储当前打包的字节
+	size_t bit_idx = 0;       // 当前bit在字节中的位置（0~7）
+	size_t byte_idx = 0;      // 当前写入的字节索引
+
+	for (bool bit : bool_deque) {
+		if (bit) {
+			if (big_endian) {
+				current_byte |= (1 << (7 - bit_idx));
+			}
+			else {
+				current_byte |= (1 << bit_idx);
+			}
+		}
+		bit_idx++;
+		if (bit_idx == 8) {
+			out_bytes[byte_idx++] = current_byte;
+			current_byte = 0;
+			bit_idx = 0;
+		}
+	}
+	if (bit_idx > 0) {
+		out_bytes[byte_idx++] = current_byte;
+	}
+	return byte_idx;
+}
+
+size_t calc_uint8_to_deque_bool_len(const uint8_t in_bytes[],
+	size_t in_len,
+	size_t total_bits = 0) {
+	if (in_bytes == nullptr || in_len == 0) return 0;
+	size_t max_bits = in_len * 8;
+	return (total_bits == 0 || total_bits > max_bits) ? max_bits : total_bits;
+}
+
+size_t uint8_to_deque_bool(
+	const uint8_t in_bytes[],
+	size_t in_len,
+	std::deque<bool>& out_deque,
+	size_t total_bits = 0,
+	bool big_endian = false
+) {
+	// 1. 参数合法性校验
+	if (in_bytes == nullptr || in_len == 0) {
+		fprintf(stderr, "Error: Invalid input (null pointer or empty array)\n");
+		out_deque.clear();
+		return 0;
+	}
+
+	// 2. 清空输出队列，计算实际要拆分的 bit 数
+	out_deque.clear();
+	size_t actual_bits = calc_uint8_to_deque_bool_len(in_bytes, in_len, total_bits);
+	if (actual_bits == 0) {
+		return 0;
+	}
+
+	size_t bit_count = 0; // 已拆分的 bit 数
+	// 3. 逐字节拆分 bit
+	for (size_t byte_idx = 0; byte_idx < in_len && bit_count < actual_bits; byte_idx++) {
+		uint8_t current_byte = in_bytes[byte_idx];
+		// 逐 bit 拆分当前字节（0~7位）
+		for (size_t bit_idx = 0; bit_idx < 8 && bit_count < actual_bits; bit_idx++) {
+			bool bit_val = false;
+			if (big_endian) {
+				// 大端：bit_idx=0 → 取第7位，bit_idx=1 → 取第6位...
+				bit_val = (current_byte >> (7 - bit_idx)) & 0x01;
+			}
+			else {
+				// 小端：bit_idx=0 → 取第0位，bit_idx=1 → 取第1位...（默认）
+				bit_val = (current_byte >> bit_idx) & 0x01;
+			}
+			out_deque.push_back(bit_val);
+			bit_count++;
+		}
+	}
+	return bit_count;
+}
+
+void print_mac(const uint8_t* mac, const char* prefix) {
+
+	printf("%s%02x:%02x:%02x:%02x:%02x:%02x\n", prefix,
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+bool compare_mac(const uint8_t* mac1, const uint8_t* mac2) {
+	for (int i = 0; i < 6; ++i) {
+		if (mac1[i] != mac2[i]) return false;
+	}
+	return true;
+}

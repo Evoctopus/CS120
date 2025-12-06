@@ -1,15 +1,26 @@
 #pragma once
 
 #include "Utils.h"
-#include "Mutex_FIFO.h"
 #include "Modulation.h"
-#include "CRC.h"
-#include "Logger.h"
 
-# define MAX_BACKOFF_COUNT 5
-# define BASE_BACK_OFF 50
+#define MAX_BACKOFF_COUNT 5
+#define BASE_BACK_OFF 50
+#define TIMEOUT_MS 200
+#define MAX_RESEND 10
 
+#define DEST_BITS 2
+#define SRC_BITS 2
+#define TYPE_BITS 2
+#define SEQUENCE_BITS 10
+#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS+SEQUENCE_BITS
  
+#define LISTENING_TIME 10
+
+#define DATA_TYPE 0
+#define ACK_TYPE 1
+#define ICMP_REQUEST_TYPE 2
+#define ICMP_REPLY_TYPE 3
+
 class MAC : public juce::Thread
 {
 
@@ -27,6 +38,11 @@ private:
 
 	std::thread timeout_thread;
 	std::atomic<bool> stop_timeout_thread{ false };
+
+	std::mutex* audio_mtx;                  // 互斥锁，保护条件变量和共享标志
+	std::condition_variable* audio_cv;      // 条件变量，用于唤醒线程
+	bool* audio_wakeup;        // 唤醒标志（核心：等待的“条件”）
+
 
 	struct Frame {
 		std::deque<bool> data; 
@@ -89,10 +105,10 @@ private:
 		sending_logger.log_message(format("Want to send Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
 
 		auto start_time = std::chrono::steady_clock::now();
-		sending_logger.log_message(format("Start listening 50 ms"));
+		sending_logger.log_message(format("Start listening ", LISTENING_TIME, "ms"));
 		auto now = start_time;
 
-		/*while (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() <= 50)
+		while (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() <= LISTENING_TIME)
 		{
 			now = std::chrono::steady_clock::now();
 			if (!channel_is_idle) {
@@ -100,11 +116,11 @@ private:
 				frame.generate_random_backoff();
 				return;
 			}
-		}*/
+		}
 		now = std::chrono::steady_clock::now();
 		modulator.modulate(frame.data);
 		frame.send_time = now;
-		std::cout << "[Sender] Send Frame " << frame.sequence_num << " Length=" << frame.data.size() << " bits" << "\n";
+		//std::cout << "[Sender] Send Frame " << frame.sequence_num << " Length=" << frame.data.size() << " bits" << "\n";
 		sending_logger.log_message(format("Channel Free, Send Frame", frame.sequence_num, " Length=", frame.data.size(), " bits"));
 	}
 
@@ -124,14 +140,20 @@ public:
 		}
 	}
 
-	void send_data(const std::deque<bool>& data, int dest) {
+	void set_ipv4_lock(std::mutex* audio_mtx, std::condition_variable* audio_cv, bool* audio_wakeup) {
+		this->audio_mtx = audio_mtx;
+		this->audio_cv = audio_cv;
+		this->audio_wakeup = audio_wakeup;
+	}
+
+	void send_data(const std::deque<bool>& data, int dest, int type) {
 
 		std::lock_guard<std::mutex> lock(mtx);  // 线程安全
 
 		std::deque<bool> frame_buffer;
 		frame_buffer = data;
-		encode_crc(frame_buffer);
-		encode_mac_header(frame_buffer, 1, dest, LFS);
+
+		encode_mac_header(frame_buffer, type, dest, LFS);
 
 
 		Frame frame;
@@ -145,13 +167,15 @@ public:
 		modulator.modulate(frame.data);*/
 		
 		if (!Tx_pending) {
+			sending_logger.log_message(format("Sending Frame", LFS));
 			current_sending_frame = frame;
-			Tx_pending = true;
+			Tx_pending.store(true);
 		}
 		else {
+			sending_logger.log_message(format("Ack not received, add Frame", LFS, " to buffer"));
 			frames_buffer.push_back(std::move(frame));
 		}
-		sending_logger.log_message(format("Add Frame", LFS, " to buffer"));
+		
 		LFS++;
 		return;
 	}
@@ -164,7 +188,11 @@ public:
 			sending_logger.log_message(format("Invalid ACK", ack_num));
 			return;
 		}
+		update_frame_buffer();
+		
+	}
 
+	void update_frame_buffer() {
 		if (frames_buffer.empty()) {
 			Tx_pending = false;
 			return;
@@ -179,12 +207,31 @@ public:
 	void handle_frame(const std::deque<bool>& data, int sequence_num, int src) {
 		std::lock_guard<std::mutex> lock(mtx); 
 
-		output_fifo.push(std::make_pair(src, data));
+		output_fifo.push(std::make_pair(DATA_TYPE, data));
+		wake_up_upper_thread();
 
 		printf("[Receiver] Received Frame %d\n", sequence_num);
 		receiving_logger.log_message(format("Accept Frame ", sequence_num));
 		send_ACK(src, sequence_num);	
 		return;
+	}
+
+	void send_icmp_reply(int dst, int sequence_num) {
+		std::deque<bool> frame;
+		encode_mac_header(frame, ICMP_REPLY_TYPE, dst, sequence_num);
+		modulator.modulate(frame);
+	}
+
+	void send_icmp_request(int dst) {
+		
+		std::deque<bool> data;
+		send_data(data, dst, ICMP_REQUEST_TYPE);
+	}
+
+	void wake_up_upper_thread() {
+		std::lock_guard<std::mutex> lock(*audio_mtx);
+		*audio_wakeup = true;
+		audio_cv->notify_one();
 	}
 	
 
@@ -201,16 +248,28 @@ public:
 				if (dest == src) {
 					int src = decode_header(SRC_BITS, receiving_buffer);
 					int type = decode_header(TYPE_BITS, receiving_buffer);
-					int sequence_num = decode_header(FRAME_SEQUENCY_BITS, receiving_buffer);
-					if (type == 1) {
-						if (decode_crc(receiving_buffer)) {
-							handle_frame(receiving_buffer, sequence_num, src);
-						}
-						else receiving_logger.log_message(format("The frame ", sequence_num," doesn't pass the crc test"));
-					}
-					else { 
+					int sequence_num = decode_header(SEQUENCE_BITS, receiving_buffer);
+					switch (type) {
+					case DATA_TYPE:
+						handle_frame(receiving_buffer, sequence_num, src);
+						break;
+					case ACK_TYPE:
 						handle_ack(sequence_num);
-					}		
+						break;
+					case ICMP_REQUEST_TYPE:
+						receiving_logger.log_message(format("Receive Request ", sequence_num));
+						send_icmp_reply(src, sequence_num);
+						break;
+					case ICMP_REPLY_TYPE:
+						update_frame_buffer();
+						output_fifo.push(std::make_pair(ICMP_REPLY_TYPE, std::move(receiving_buffer)));
+						receiving_logger.log_message(format("Receive Reply ", sequence_num, " Waking up Ip Handler to handle"));
+						wake_up_upper_thread();
+						break;
+					default:
+						receiving_logger.log_message(format("Unknown type ", type));
+					}
+							
 				}
 				else {
 					receiving_logger.log_message(format("The frame is sent to ", dest, " not to me"));
@@ -219,30 +278,17 @@ public:
 		}
 	}
 
-	void encode_crc(std::deque<bool>& payload) const {
-		int crc = crc_handler.calculate(payload);
-		encode_header(crc, payload, CRC_BITS);
-		return;
-	}
-
 	void encode_mac_header(std::deque<bool>& payload, int type, int dest, int sequence_num) const {
-		encode_header(sequence_num, payload, FRAME_SEQUENCY_BITS);
+		encode_header(sequence_num, payload, SEQUENCE_BITS);
 		encode_header(type, payload, TYPE_BITS);
 		encode_header(src, payload, SRC_BITS);
 		encode_header(dest, payload, DEST_BITS);
 		return;
 	}
 
-	bool decode_crc(std::deque<bool>& payload) {
-		int crc = decode_header(CRC_BITS, payload);
-		if (crc == -1) return false;
-		int crc_code = crc_handler.calculate(payload);
-		return crc == crc_code;
-	}
-
 	void send_ACK(int dest, int sequence_num) {
 		std::deque<bool> ack_frame;
-		encode_mac_header(ack_frame, 0, dest, sequence_num);
+		encode_mac_header(ack_frame, ACK_TYPE, dest, sequence_num);
 		modulator.modulate(ack_frame);
 		return;
 	}

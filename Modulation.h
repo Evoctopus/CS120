@@ -1,11 +1,11 @@
 #pragma once
 
-#include <vector>
 #include "Mutex_FIFO.h"
+#include "CRC.h"
+
+#define CRC_BITS 8
 
 using namespace juce;
-
-
 
 std::vector<float> generateChirp() {
     float cycle = 1.0 / float(SAMPLE_RATE);
@@ -45,21 +45,24 @@ std::vector<float> generateCarrierWave(int frequency) {
     return carrier;
 }
 
-void push_vector(std::deque<float>& q, const std::vector<float>& v) {
-    for (const auto& item : v) {
-        q.push_back(item);
-    }
-}
-
 
 class Modulator {
 
 private:
+
 	Mutex_FIFO<float>& sending_fifo;
-    
+    CRC8 crc_handler;
+
     std::vector<float> chirp;
     std::vector<float> carrier1;
     std::vector<float> carrier2;
+
+    void encode_crc(std::deque<bool>& payload) const {
+        int crc = crc_handler.calculate(payload);
+
+        encode_header(crc, payload, CRC_BITS);
+        return;
+    }
 
 public:
     Modulator(Mutex_FIFO<float>& Sending_FIFO) : 
@@ -109,6 +112,7 @@ public:
     
     void modulate(std::deque<bool> frame) {
 
+        encode_crc(frame);
         int length = frame.size();
 		encode_header(length, frame, LENGTH_BITS);
 
@@ -119,9 +123,10 @@ public:
         frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
 
         std::deque<float> output_track;
-        push_vector(output_track, chirp);
+        output_track.insert(output_track.end(), chirp.begin(), chirp.end());
         std::vector<float> encoded_signal = Line_Coding(frame);
-        push_vector(output_track, encoded_signal);
+        output_track.insert(output_track.end(), encoded_signal.begin(), encoded_signal.end());
+
 		sending_fifo.push_batch(std::move(output_track));
         return;
     }
