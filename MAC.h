@@ -11,8 +11,7 @@
 #define DEST_BITS 2
 #define SRC_BITS 2
 #define TYPE_BITS 2
-#define SEQUENCE_BITS 10
-#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS+SEQUENCE_BITS
+#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS
  
 #define LISTENING_TIME 10
 
@@ -32,9 +31,10 @@ private:
 	Mutex_FIFO<std::pair<int, std::deque<bool>>>& output_fifo;
 	Modulator& modulator;
 	std::atomic<bool>& channel_is_idle;
-	CRC8 crc_handler;
+
 	std::mutex mtx;
 	int src;
+
 
 	std::thread timeout_thread;
 	std::atomic<bool> stop_timeout_thread{ false };
@@ -153,7 +153,7 @@ public:
 		std::deque<bool> frame_buffer;
 		frame_buffer = data;
 
-		encode_mac_header(frame_buffer, type, dest, LFS);
+		encode_mac_header(frame_buffer, type, dest);
 
 
 		Frame frame;
@@ -180,14 +180,10 @@ public:
 		return;
 	}
 
-	void handle_ack(int ack_num) {
+	void handle_ack() {
 		
 		std::lock_guard<std::mutex> lock(mtx);  
-		sending_logger.log_message(format("Received ACK ", ack_num));
-		if (ack_num != current_sending_frame.sequence_num) {
-			sending_logger.log_message(format("Invalid ACK", ack_num));
-			return;
-		}
+		sending_logger.log_message(format("Received ACK "));
 		update_frame_buffer();
 		
 	}
@@ -204,27 +200,27 @@ public:
 		}
 	}
 	
-	void handle_frame(const std::deque<bool>& data, int sequence_num, int src) {
+	void handle_frame(const std::deque<bool>& data, int src) {
 		std::lock_guard<std::mutex> lock(mtx); 
 
 		output_fifo.push(std::make_pair(DATA_TYPE, data));
 		wake_up_upper_thread();
 
-		printf("[Receiver] Received Frame %d\n", sequence_num);
-		receiving_logger.log_message(format("Accept Frame ", sequence_num));
-		send_ACK(src, sequence_num);	
+		receiving_logger.log_message(format("Received Frame"));
+		send_ACK(src);	
 		return;
 	}
 
-	void send_icmp_reply(int dst, int sequence_num) {
+	void send_icmp_reply(int dst) {
 		std::deque<bool> frame;
-		encode_mac_header(frame, ICMP_REPLY_TYPE, dst, sequence_num);
+		encode_mac_header(frame, ICMP_REPLY_TYPE, dst);
 		modulator.modulate(frame);
 	}
 
-	void send_icmp_request(int dst) {
+	void send_icmp_request(int dst, uint32_t ip) {
 		
 		std::deque<bool> data;
+		encode_header(ip, data, 256);
 		send_data(data, dst, ICMP_REQUEST_TYPE);
 	}
 
@@ -248,28 +244,27 @@ public:
 				if (dest == src) {
 					int src = decode_header(SRC_BITS, receiving_buffer);
 					int type = decode_header(TYPE_BITS, receiving_buffer);
-					int sequence_num = decode_header(SEQUENCE_BITS, receiving_buffer);
 					switch (type) {
 					case DATA_TYPE:
-						handle_frame(receiving_buffer, sequence_num, src);
+						handle_frame(receiving_buffer, src);
 						break;
 					case ACK_TYPE:
-						handle_ack(sequence_num);
+						handle_ack();
 						break;
 					case ICMP_REQUEST_TYPE:
-						receiving_logger.log_message(format("Receive Request ", sequence_num));
-						send_icmp_reply(src, sequence_num);
+						output_fifo.push(std::make_pair(ICMP_REQUEST_TYPE, std::move(receiving_buffer)));
+						receiving_logger.log_message(format("Receive Request, Waking up Ip Handler to handle"));
+						wake_up_upper_thread();
 						break;
 					case ICMP_REPLY_TYPE:
 						update_frame_buffer();
 						output_fifo.push(std::make_pair(ICMP_REPLY_TYPE, std::move(receiving_buffer)));
-						receiving_logger.log_message(format("Receive Reply ", sequence_num, " Waking up Ip Handler to handle"));
+						receiving_logger.log_message(format("Receive Reply, Waking up Ip Handler to handle"));
 						wake_up_upper_thread();
 						break;
 					default:
 						receiving_logger.log_message(format("Unknown type ", type));
 					}
-							
 				}
 				else {
 					receiving_logger.log_message(format("The frame is sent to ", dest, " not to me"));
@@ -278,17 +273,16 @@ public:
 		}
 	}
 
-	void encode_mac_header(std::deque<bool>& payload, int type, int dest, int sequence_num) const {
-		encode_header(sequence_num, payload, SEQUENCE_BITS);
+	void encode_mac_header(std::deque<bool>& payload, int type, int dest) const {
 		encode_header(type, payload, TYPE_BITS);
 		encode_header(src, payload, SRC_BITS);
 		encode_header(dest, payload, DEST_BITS);
 		return;
 	}
 
-	void send_ACK(int dest, int sequence_num) {
+	void send_ACK(int dest) {
 		std::deque<bool> ack_frame;
-		encode_mac_header(ack_frame, ACK_TYPE, dest, sequence_num);
+		encode_mac_header(ack_frame, ACK_TYPE, dest);
 		modulator.modulate(ack_frame);
 		return;
 	}

@@ -81,7 +81,8 @@ int main(int argc, char* argv[])
     IpV4PacketHandler ipv4(mac, INTER_FIFO, local_address);
     
 
-    ipv4.add_to_routing_table(dst_address, true, 1);
+    ipv4.add_to_routing_table(dst_address, true, DST_ADDRESS);
+    ipv4.add_to_routing_table("1.1.1.1", "00-00-5E-00-01-01");
     
 
     //std::vector<bool> data = readBinFile("INPUT.bin");
@@ -92,7 +93,7 @@ int main(int argc, char* argv[])
     mac.startThread();
     ipv4.start_capture();
 
-    //ipv4.pinging(local_address, local_address, 0, true, 10);
+    //ipv4.pinging(local_address, dst_address, 1, true, 10);
     
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     getchar();

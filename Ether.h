@@ -7,6 +7,7 @@
 #define ICMP 1
 #define ICMP_REPLY 0
 #define ICMP_REQUEST 8
+#define DST_ADDRESS 1
 
 struct ADDRESS {
     uint32_t ipv4;
@@ -51,7 +52,6 @@ struct IcmpHeader {
     uint16_t checksum;
     uint16_t id;
     uint16_t seq;
-    // 后面跟着 Data，长度不定
 };
 
 #pragma pack(pop) // Restore default alignment
@@ -265,7 +265,7 @@ private:
 
         add_to_routing_table(ip->src_ip, eth->src_mac);
 
-        if (false && ip->dst_ip != local_address.ipv4) {
+        if (ip->dst_ip != local_address.ipv4) {
             
             ROUTE_ENTRY& entry = routing_table[ip->dst_ip];
 
@@ -292,7 +292,7 @@ private:
 
                 audio_scam_len = caplen;
 
-                mac.send_icmp_request(entry.audio_addr);
+                mac.send_icmp_request(entry.audio_addr, ip->src_ip);
                 return;
             }
             ADDRESS src_addr(ip->src_ip, local_address.mac);
@@ -323,7 +323,10 @@ private:
             return send_ipv4_packet(dst_addr, src_addr, ICMP, payload, payload_len);
         }
         else if (icmp_header->type == ICMP_REPLY) { // ICMP Echo Reply
-		
+            if (ntohs(icmp_header->id) == 1) {
+                mac.send_icmp_reply(DST_ADDRESS);
+                return true;
+            }
 			icmp_echo_received.store(true);
             cv_.notify_all();
             return true;
@@ -389,17 +392,28 @@ private:
                         cv_.notify_all();
                     }
                 }
+                if (type == ICMP_REQUEST_TYPE) {
+                    
+                    uint32_t ip = decode_header(256, receiving_buffer.second);
+                    if (ip == local_address.ipv4) {
+                        mac.send_icmp_reply(DST_ADDRESS);
+                    }
+                    else {
+                        ADDRESS dst(ip, routing_table[ip].mac.get());
+                        print_ip(ip, "Forwarding to "); printf("\n");
+                        send_icmp_echo(local_address, dst, ICMP_REQUEST, 1);
+                    }
+                }
             }
             audio_wakeup = false;
         }
     }
 
 public:
-    // Constructor/Destructor
+    
 	IpV4PacketHandler(MAC& MAC, Mutex_FIFO<std::pair<int, std::deque<bool>>>& INTER_FIFO, const ADDRESS& Local_addr)
         : dev_handle_(nullptr), dev_index_(0), promisc_mode_(0), is_capturing_(false), mac(MAC), inter_fifo(INTER_FIFO), local_address(Local_addr) {
 
-        // Initialize Winsock (required for network byte order functions)
         WSADATA wsaData;
         WSAStartup(MAKEWORD(2, 2), &wsaData);
 
@@ -614,10 +628,10 @@ public:
         print_ip(dst_addr.ipv4, "Pinging "); printf("\n");
         for (int i = 0; i < times; ++i) {
             if (audio_way) {
-                mac.send_icmp_request(audio_addr);
+                mac.send_icmp_request(audio_addr, dst_addr.ipv4);
             }
             else {
-                send_icmp_echo(src_addr, dst_addr, ICMP_REQUEST, get_timestamp_milliseconds());
+                send_icmp_echo(src_addr, dst_addr, ICMP_REQUEST);
             }
             uint64_t send_time = get_timestamp_milliseconds();
             icmp_echo_received = false;
@@ -635,13 +649,15 @@ public:
         const ADDRESS& src_addr,
         const ADDRESS& dst_addr,
         uint8_t type,
-        uint64_t time_stamp
+        int id = 0
     ) {
         IcmpHeader icmp_header;
 		icmp_header.type = type; 
         icmp_header.code = 0;
+        icmp_header.id = htons(id);
+        icmp_header.seq = htons(1);
         icmp_header.checksum = 0;
-        icmp_header.checksum = calculate_checksum((uint8_t*) & icmp_header, ICMP_HDR_LEN);
+        icmp_header.checksum = calculate_checksum((uint8_t*)& icmp_header, ICMP_HDR_LEN);
         return send_ipv4_packet(src_addr, dst_addr, ICMP, (uint8_t*)&icmp_header, ICMP_HDR_LEN);
     }
 

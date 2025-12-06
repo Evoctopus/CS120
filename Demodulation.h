@@ -58,10 +58,8 @@ private:
 
     bool decode_crc(std::deque<bool>& payload) {
         int crc = decode_header(CRC_BITS, payload);
-        //printf("Decoded CRC: %d\n", crc);
         if (crc == -1) return false;
         int crc_code = crc_handler.calculate(payload);
-        //printf("Calculated CRC: %d\n", crc_code);
         return crc == crc_code;
     }
 
