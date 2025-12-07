@@ -39,9 +39,8 @@ private:
 	std::thread timeout_thread;
 	std::atomic<bool> stop_timeout_thread{ false };
 
-	std::mutex* audio_mtx;                  // 互斥锁，保护条件变量和共享标志
-	std::condition_variable* audio_cv;      // 条件变量，用于唤醒线程
-	bool* audio_wakeup;        // 唤醒标志（核心：等待的“条件”）
+	ThreadFlag& mac_thread_flag;
+	ThreadFlag& audio_thread_flag;
 
 
 	struct Frame {
@@ -126,11 +125,19 @@ private:
 
 public:
 
-	MAC(Mutex_FIFO<std::deque<bool>>& MAC_FIFO, Mutex_FIFO<std::pair<int, std::deque<bool>>>& Output_FIFO, Modulator& Modulator, std::atomic<bool>& Channel_is_idle, int src) :
-		juce::Thread("MAC"), mac_fifo(MAC_FIFO), output_fifo(Output_FIFO), modulator(Modulator), channel_is_idle(Channel_is_idle), src(src)
+	MAC(Mutex_FIFO<std::deque<bool>>& MAC_FIFO, 
+		Mutex_FIFO<std::pair<int, std::deque<bool>>>& INTER_FIFO, 
+		Modulator& modulator_, 
+		std::atomic<bool>& channel_is_idle_, 
+		ThreadFlag& mac_thread_flag_,
+		ThreadFlag& audio_thread_flag_) :
+		juce::Thread("MAC"), mac_fifo(MAC_FIFO), output_fifo(INTER_FIFO), modulator(modulator_), channel_is_idle(channel_is_idle_),
+		mac_thread_flag(mac_thread_flag_), audio_thread_flag(audio_thread_flag_)
 	{
 		sending_logger.init("Sender.log");
 		receiving_logger.init("Receiver.log");
+		printf("Your local audio MAC address: ");
+		scanf("%d", &src);
 	}
 
 	~MAC() {
@@ -138,12 +145,6 @@ public:
 		if (timeout_thread.joinable()) {
 			timeout_thread.join();
 		}
-	}
-
-	void set_ipv4_lock(std::mutex* audio_mtx, std::condition_variable* audio_cv, bool* audio_wakeup) {
-		this->audio_mtx = audio_mtx;
-		this->audio_cv = audio_cv;
-		this->audio_wakeup = audio_wakeup;
 	}
 
 	void send_data(const std::deque<bool>& data, int dest, int type) {
@@ -204,7 +205,7 @@ public:
 		std::lock_guard<std::mutex> lock(mtx); 
 
 		output_fifo.push(std::make_pair(DATA_TYPE, data));
-		wake_up_upper_thread();
+		audio_thread_flag.wake_up();
 
 		receiving_logger.log_message(format("Received Frame"));
 		send_ACK(src);	
@@ -223,12 +224,6 @@ public:
 		encode_header(ip, data, 256);
 		send_data(data, dst, ICMP_REQUEST_TYPE);
 	}
-
-	void wake_up_upper_thread() {
-		std::lock_guard<std::mutex> lock(*audio_mtx);
-		*audio_wakeup = true;
-		audio_cv->notify_one();
-	}
 	
 
 	void run() override {
@@ -238,8 +233,10 @@ public:
 
 		while (!threadShouldExit()) {
 
-			if (mac_fifo.pop(receiving_buffer) && receiving_buffer.size() >= MAC_HEADER_LENGTH)
+			mac_thread_flag.sleep();
+			while (mac_fifo.pop(receiving_buffer))
 			{
+				if (receiving_buffer.size() < MAC_HEADER_LENGTH) continue;
 				int dest = decode_header(DEST_BITS, receiving_buffer);
 				if (dest == src) {
 					int src = decode_header(SRC_BITS, receiving_buffer);
@@ -254,13 +251,13 @@ public:
 					case ICMP_REQUEST_TYPE:
 						output_fifo.push(std::make_pair(ICMP_REQUEST_TYPE, std::move(receiving_buffer)));
 						receiving_logger.log_message(format("Receive Request, Waking up Ip Handler to handle"));
-						wake_up_upper_thread();
+						audio_thread_flag.wake_up();
 						break;
 					case ICMP_REPLY_TYPE:
 						update_frame_buffer();
 						output_fifo.push(std::make_pair(ICMP_REPLY_TYPE, std::move(receiving_buffer)));
 						receiving_logger.log_message(format("Receive Reply, Waking up Ip Handler to handle"));
-						wake_up_upper_thread();
+						audio_thread_flag.wake_up();
 						break;
 					default:
 						receiving_logger.log_message(format("Unknown type ", type));

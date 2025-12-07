@@ -7,7 +7,7 @@
 #define ICMP 1
 #define ICMP_REPLY 0
 #define ICMP_REQUEST 8
-#define DST_ADDRESS 1
+#define DST_ADDRESS 0
 
 struct ADDRESS {
     uint32_t ipv4;
@@ -86,10 +86,9 @@ private:
 
     std::thread audio_capture_thread;
     std::atomic<bool> audio_thread_stop{ false };
-    std::mutex audio_mtx;                  // 互斥锁，保护条件变量和共享标志
-    std::condition_variable audio_cv;      // 条件变量，用于唤醒线程
-    bool audio_wakeup = false;          // 唤醒标志（核心：等待的“条件”）
 
+	ThreadFlag& audio_thread_flag;
+    
     std::mutex mtx_;              // Thread safety mutex
     std::condition_variable cv_;
 
@@ -238,7 +237,6 @@ private:
         return FRAME_TOTAL_LEN;
     }
 
-
     void parse_ipv4_packet(bpf_u_int32 caplen, const uint8_t* pkt_data) {
 
         if (caplen < ETH_HDR_LEN + IP_HDR_LEN) {
@@ -259,10 +257,10 @@ private:
         int actual_payload_len = (ip_payload_len < frame_payload_len) ? ip_payload_len : frame_payload_len;
         u_char* payload_ptr = (u_char*)ip + IP_HDR_LEN;
 
-        if (!compare_mac(eth->dst_mac, local_address.mac)) return;
-        
         print_packet_info(ip->src_ip, ip->dst_ip, eth->src_mac, eth->dst_mac, payload_ptr, actual_payload_len, false, false);
 
+        if (!compare_mac(eth->dst_mac, local_address.mac)) return;
+        
         add_to_routing_table(ip->src_ip, eth->src_mac);
 
         if (ip->dst_ip != local_address.ipv4) {
@@ -363,37 +361,30 @@ private:
         cb_param.handler = this;
         cb_param.user_data = nullptr;
 
-        printf("\nCapture thread started (IPv4 packets)\n");
-        // Run capture (block until pcap_breakloop)
         pcap_loop(dev_handle_, 0, static_packet_handler, (u_char*)&cb_param);
 
-        // Mark capture as stopped
         is_capturing_ = false;
         printf("Capture thread stopped\n");
     }
 
     void audio_capture() {
         while (!audio_thread_stop) {
-            std::unique_lock<std::mutex> lock(audio_mtx);
-            audio_cv.wait(lock, [this]() { return audio_wakeup; });
 
-            printf("Waking up, start process\n");
+            audio_thread_flag.sleep();
+
             std::pair<int, std::deque<bool>> receiving_buffer;
             while (inter_fifo.pop(receiving_buffer)) {
                 int type = receiving_buffer.first;
                 if (type == ICMP_REPLY_TYPE) {
                     if (audio_scam_len != 0) {
-                        printf("Sending fake icmp\n");
                         pcap_sendpacket(dev_handle_, audio_scam_buffer, audio_scam_len);
                     }
                     else {
-                        printf("Reply by audio interface\n");
                         icmp_echo_received.store(true);
                         cv_.notify_all();
                     }
                 }
                 if (type == ICMP_REQUEST_TYPE) {
-                    
                     uint32_t ip = decode_header(256, receiving_buffer.second);
                     if (ip == local_address.ipv4) {
                         mac.send_icmp_reply(DST_ADDRESS);
@@ -405,26 +396,29 @@ private:
                     }
                 }
             }
-            audio_wakeup = false;
         }
     }
 
 public:
     
-	IpV4PacketHandler(MAC& MAC, Mutex_FIFO<std::pair<int, std::deque<bool>>>& INTER_FIFO, const ADDRESS& Local_addr)
-        : dev_handle_(nullptr), dev_index_(0), promisc_mode_(0), is_capturing_(false), mac(MAC), inter_fifo(INTER_FIFO), local_address(Local_addr) {
+	IpV4PacketHandler(MAC& MAC, Mutex_FIFO<std::pair<int, std::deque<bool>>>& INTER_FIFO, const ADDRESS& Local_addr, ThreadFlag& audio_thread_flag_)
+        : dev_handle_(nullptr), dev_index_(0), promisc_mode_(0), is_capturing_(false), mac(MAC), inter_fifo(INTER_FIFO), local_address(Local_addr),
+		audio_thread_flag(audio_thread_flag_)
+    {
 
         WSADATA wsaData;
         WSAStartup(MAKEWORD(2, 2), &wsaData);
 
         srand(time(nullptr)); // Seed for random IPv4 ID
 
-        mac.set_ipv4_lock(&audio_mtx, &audio_cv, &audio_wakeup);
         list_devices();
         int dev_index = 0;
         std::cout << "Select the device index to capture IPv4 packets: ";
         std::cin >> dev_index;
         open_device(dev_index);
+
+        audio_capture_thread = std::thread(&IpV4PacketHandler::audio_capture, this);
+        start_capture();
     }
 
     ~IpV4PacketHandler() {
@@ -436,6 +430,8 @@ public:
         if (capture_thread_.joinable()) {
             capture_thread_.join();
         }
+
+        audio_thread_stop = true;
         if (audio_capture_thread.joinable()) {
             audio_capture_thread.join();
         }
@@ -557,7 +553,6 @@ public:
             return false;
         }
 
-        // Open adapter (capture all frames, 1s timeout)
         dev_handle_ = pcap_open_live(
             dev->name,        // Adapter name
             65536,            // Capture buffer size
@@ -589,6 +584,7 @@ public:
             promisc_mode_ ? "Enabled" : "Disabled");
         print_pcap_addr(dev->addresses, "");
         pcap_freealldevs(alldevs);
+        
         return true;
     }
 
@@ -619,27 +615,32 @@ public:
     }
 
     void pinging(
-        const ADDRESS& src_addr,
-		const ADDRESS& dst_addr,          // Destination address info
-        int audio_addr = -1,
-        int audio_way = false,
-        int times = 0
+        const char* ip_str,
+        int times = 4
     ) {
-        print_ip(dst_addr.ipv4, "Pinging "); printf("\n");
+        uint32_t ip = inet_addr(ip_str);
+        print_ip(ip, "Pinging "); printf("\n");
+		
+        ROUTE_ENTRY& entry = routing_table[ip];
+		ADDRESS dst_addr(ip, entry.mac.get());
         for (int i = 0; i < times; ++i) {
-            if (audio_way) {
-                mac.send_icmp_request(audio_addr, dst_addr.ipv4);
+            if (entry.audio_way) {
+                mac.send_icmp_request(entry.audio_addr, ip);
             }
             else {
-                send_icmp_echo(src_addr, dst_addr, ICMP_REQUEST);
+                send_icmp_echo(local_address, dst_addr, ICMP_REQUEST);
             }
             uint64_t send_time = get_timestamp_milliseconds();
             icmp_echo_received = false;
             std::unique_lock<std::mutex> ulock(mtx_);
             bool timeout = cv_.wait_for(ulock, std::chrono::milliseconds(PING_TIMEOUT_MS),
                 [this]() { return icmp_echo_received.load(); });
+            if(timeout == false) {
+                print_ip(dst_addr.ipv4, "Request timed out for "); printf("\n");
+                continue;
+			}
             uint64_t rtt = get_timestamp_milliseconds() - send_time;
-            print_ip(src_addr.ipv4, "Reply from ");
+            print_ip(dst_addr.ipv4, "Reply from ");
             printf(": time=%lums\n", rtt);
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
@@ -702,7 +703,6 @@ public:
 
         is_capturing_ = true;
         capture_thread_ = std::thread(&IpV4PacketHandler::capture_loop, this);
-        audio_capture_thread = std::thread(&IpV4PacketHandler::audio_capture, this);
         return true;
     }
 
@@ -711,7 +711,6 @@ public:
         if (is_capturing_ && dev_handle_) {
             pcap_breakloop(dev_handle_);
             is_capturing_ = false;
-            audio_thread_stop = true;
             printf("\nStopping IPv4 capture...\n");
         }
     }

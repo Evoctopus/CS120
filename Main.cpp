@@ -12,6 +12,10 @@ Mutex_FIFO<std::deque<bool>> MAC_FIFO;
 Mutex_FIFO<std::pair<int, std::deque<bool>>> INTER_FIFO;
 std::atomic<bool> channel_is_idle;
 
+ThreadFlag demo_thread_flag;
+ThreadFlag audio_thread_flag;
+ThreadFlag mac_thread_flag;
+
 std::vector<bool> flatten(Mutex_FIFO<std::pair<uint8_t*, size_t>>& fifo) {
     std::vector<bool> result;
     std::pair<uint8_t*, size_t> item;
@@ -71,17 +75,19 @@ int main(int argc, char* argv[])
     AudioDeviceManager dev_manager;
     initialize_dev_manager(dev_manager);
 
+    ADDRESS global_address("10.20.97.75", "74-3A-F4-48-A9-C7");
     ADDRESS local_address("192.168.137.1", "76-3A-F4-48-A9-C7");
     ADDRESS dst_address("10.20.102.251", "C8-CB-9E-77-7D-C9");
 
-    AudioDevice audio_device(Sending_FIFO, Receiving_FIFO, channel_is_idle);
-    Demodulator demodulator(Receiving_FIFO, MAC_FIFO);
+    AudioDevice audio_device(Sending_FIFO, Receiving_FIFO, channel_is_idle, demo_thread_flag);
+    Demodulator demodulator(Receiving_FIFO, MAC_FIFO, mac_thread_flag, demo_thread_flag);
     Modulator modulator(Sending_FIFO);
-    MAC mac(MAC_FIFO, INTER_FIFO, modulator, channel_is_idle, 0);
-    IpV4PacketHandler ipv4(mac, INTER_FIFO, local_address);
+    MAC mac(MAC_FIFO, INTER_FIFO, modulator, channel_is_idle, mac_thread_flag, audio_thread_flag);
+    IpV4PacketHandler ipv4(mac, INTER_FIFO, global_address, audio_thread_flag);
     
 
     ipv4.add_to_routing_table(dst_address, true, DST_ADDRESS);
+    ipv4.add_to_routing_table(global_address, true, 0);
     ipv4.add_to_routing_table("1.1.1.1", "00-00-5E-00-01-01");
     
 
@@ -93,11 +99,38 @@ int main(int argc, char* argv[])
     mac.startThread();
     ipv4.start_capture();
 
-    //ipv4.pinging(local_address, dst_address, 1, true, 10);
-    
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-    getchar();
+	std::cout << "Type 'exit' to quit the program.\n";
+    std::string cmd;
+    std::getline(std::cin, cmd);
+    while (cmd != "exit") {
+        std::cout << "(Aether): ";
+        std::getline(std::cin, cmd);
+        std::vector<std::string> tokens = split_by_space(cmd);
+        for(std::string& str : tokens) {
+            std::cout << str << " ";
+		}
+		std::cout << std::endl;
+        if (tokens[0] == "ping") {
 
+            if (tokens.size() == 2) {
+                ipv4.pinging(tokens[1].c_str(), 4);
+            }
+            else if (tokens.size() == 4) {
+                int times = std::stoi(tokens[3]);
+                ipv4.pinging(tokens[1].c_str(), times);
+            }
+            else {
+                std::cout << "Usage: ping <IP_ADDRESS> [TIMES]\n";
+			}
+        }
+
+        if (tokens[0] == "open") {
+            if (tokens.size() == 2) {
+                int index = std::stoi(tokens[1]);
+				ipv4.open_device(index);
+            }
+        }
+    }
     dev_manager.removeAudioCallback(&audio_device);
     demodulator.signalThreadShouldExit();
     mac.signalThreadShouldExit();

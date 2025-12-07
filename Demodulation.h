@@ -37,6 +37,9 @@ private:
     Mutex_FIFO<float> &receiving_fifo;
     Mutex_FIFO<std::deque<bool>> &mac_fifo;
 
+    ThreadFlag& mac_thread_flag;
+    ThreadFlag& demo_thread_flag;
+
     std::deque<float> syncFIFO;
     std::deque<float> decodedFIFO;
 
@@ -70,8 +73,8 @@ private:
 public:
 
    
-	Demodulator(Mutex_FIFO<float>& Receiving_FIFO, Mutex_FIFO<std::deque<bool>>& MAC_FIFO) :
-		juce::Thread("Demodulator"), receiving_fifo(Receiving_FIFO), mac_fifo(MAC_FIFO)
+	Demodulator(Mutex_FIFO<float>& RECEIVING_FIFO, Mutex_FIFO<std::deque<bool>>& MAC_FIFO, ThreadFlag& mac_thread_flag_, ThreadFlag& demo_thread_flag_) :
+		juce::Thread("Demodulator"), receiving_fifo(RECEIVING_FIFO), mac_fifo(MAC_FIFO), mac_thread_flag(mac_thread_flag_), demo_thread_flag(demo_thread_flag_)
     {
         syncFIFO.resize(PREAMBLE_LENGTH, 0.0f);
         state = SYNC;
@@ -96,73 +99,79 @@ public:
         float current_sample;
         float buffer[512];
         while (!threadShouldExit()) {
- 
+            
+            demo_thread_flag.sleep();
             size_t samples = receiving_fifo.pop_batch(buffer, 512);
+            while (samples)
+            {
+                for (int i = 0; i < samples; ++i) {
+                    //frame_buffer.push_back(current_sample);
+                    //power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
+                    //power_debug.push_back(power);
+                    current_sample = buffer[i];
+                    if (state == SYNC) {
 
-            for (int i = 0; i < samples; ++i) {
-                //frame_buffer.push_back(current_sample);
-                //power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
-                //power_debug.push_back(power);
-                current_sample = buffer[i];
-                if (state == SYNC) {
+                        syncFIFO.pop_front();
+                        syncFIFO.push_back(current_sample);
 
-                    syncFIFO.pop_front();
-                    syncFIFO.push_back(current_sample);
-
-                    decodedFIFO.push_back(current_sample);
-                    float syncPower = 0.0f;
-                    for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
-                        syncPower += syncFIFO[j] * chirp[j];
-                    }
-					syncPower /= 100.0f;
-                    //syncPower_debug.push_back(syncPower);
-
-                    if (syncPower > syncPower_localMax && syncPower > SYNC_POWER_BOARDER){
-                        syncPower_localMax = syncPower;
-                        start_index = time;
-                        decodedFIFO.clear();
-                    }
-                    else if ((time - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
-                        demodulating_logger.log_message(format("Preamble detected with sync power: ", syncPower_localMax));
-                        syncPower_localMax = 0.0f;
-                        start_index = 0;
-                        time = 0;
-                        std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
-                        state = DECODE;   
-                    }
-                }
-                else if (state == DECODE) {
-
-                    //syncPower_debug.push_back(0.0f);
-                    decodedFIFO.push_back(current_sample);
-                    size_t decoded_size = decodedFIFO.size();
-
-                    if (decoded_size >= get_sample_length(LENGTH_BITS) && frame_length == 0) {
-
-                        auto end = decodedFIFO.begin() + get_sample_length(LENGTH_BITS);
-                        std::deque<float> length_field(decodedFIFO.begin(), end);
-                        decodedFIFO.erase(decodedFIFO.begin(), end);
-                        std::deque<bool> decoded_bits = extract_data_LC(length_field, LENGTH_BITS);
-                        frame_length = decode_header(LENGTH_BITS, decoded_bits);
-                        decoded_size -= get_sample_length(LENGTH_BITS);
-                        
-                    }
-                    if (frame_length != 0 && decoded_size >= get_sample_length(frame_length)) {
-                        std::deque<bool> decoded_bits = extract_data_LC(decodedFIFO, frame_length);
-                        if (decode_crc(decoded_bits)) {
-                            frame_detected++;
-                            demodulating_logger.log_message(format("Frame length ", frame_length - CRC_BITS));
-                            mac_fifo.push(std::move(decoded_bits));
+                        decodedFIFO.push_back(current_sample);
+                        float syncPower = 0.0f;
+                        for (int j = 0; j < PREAMBLE_LENGTH; ++j) {
+                            syncPower += syncFIFO[j] * chirp[j];
                         }
-                        else {
-                            demodulating_logger.log_message(format("The frame doesn't pass the crc test"));
+                        syncPower /= 100.0f;
+                        //syncPower_debug.push_back(syncPower);
+
+                        if (syncPower > syncPower_localMax && syncPower > SYNC_POWER_BOARDER) {
+                            syncPower_localMax = syncPower;
+                            start_index = time;
+                            decodedFIFO.clear();
                         }
-                        decodedFIFO.clear();
-                        state = SYNC;
-                        frame_length = 0;
+                        else if ((time - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
+                            demodulating_logger.log_message(format("Preamble detected with sync power: ", syncPower_localMax));
+                            syncPower_localMax = 0.0f;
+                            start_index = 0;
+                            time = 0;
+                            std::fill(syncFIFO.begin(), syncFIFO.end(), 0.0f);
+                            state = DECODE;
+                        }
                     }
+                    else if (state == DECODE) {
+
+                        //syncPower_debug.push_back(0.0f);
+                        decodedFIFO.push_back(current_sample);
+                        size_t decoded_size = decodedFIFO.size();
+
+                        if (decoded_size >= get_sample_length(LENGTH_BITS) && frame_length == 0) {
+
+                            auto end = decodedFIFO.begin() + get_sample_length(LENGTH_BITS);
+                            std::deque<float> length_field(decodedFIFO.begin(), end);
+                            decodedFIFO.erase(decodedFIFO.begin(), end);
+                            std::deque<bool> decoded_bits = extract_data_LC(length_field, LENGTH_BITS);
+                            frame_length = decode_header(LENGTH_BITS, decoded_bits);
+                            decoded_size -= get_sample_length(LENGTH_BITS);
+
+                        }
+                        if (frame_length != 0 && decoded_size >= get_sample_length(frame_length)) {
+                            std::deque<bool> decoded_bits = extract_data_LC(decodedFIFO, frame_length);
+                            if (decode_crc(decoded_bits)) {
+                                frame_detected++;
+                                demodulating_logger.log_message(format("Frame length ", frame_length - CRC_BITS));
+                                mac_fifo.push(std::move(decoded_bits));
+                                mac_thread_flag.wake_up();
+                            }
+                            else {
+                                demodulating_logger.log_message(format("The frame doesn't pass the crc test"));
+                            }
+                            decodedFIFO.clear();
+                            state = SYNC;
+                            frame_length = 0;
+                        }
+                    }
+                    time++;
+                    
                 }
-                time++;
+                samples = receiving_fifo.pop_batch(buffer, 512);
             }
         }
         demodulating_logger.log_message(format("Frame ", frame_detected, " decoded"));

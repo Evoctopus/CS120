@@ -42,17 +42,15 @@ struct ThreadFlag {
 
 	void sleep() {
 		std::unique_lock<std::mutex> lock(mtx);
+		wakeup = false;
 		cv.wait(lock, [this]() { return wakeup; });
 	}
 
 	void wake_up() {
+		if (wakeup) return;
 		std::lock_guard<std::mutex> lock(mtx);
 		wakeup = true;
 		cv.notify_one();
-	}
-
-	void reset() {
-		wakeup = false;
 	}
 };
 
@@ -212,10 +210,6 @@ uint64_t decode_header(int bit_num, std::deque<bool>& payload) {
 
 void encode_header(uint64_t data, std::deque<bool>& payload, int bit_num) {
 
-	if (data >= 1 << bit_num) {
-		std::cerr << "Error: data exceeds the specified bit number." << std::endl;
-		return; 
-	}
 	while (data > 0 || bit_num > 0) {
 		payload.push_front(data & 1);
 		data = data >> 1; 
