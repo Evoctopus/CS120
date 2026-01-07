@@ -4,6 +4,15 @@
 
 using namespace juce;
 
+
+void initialize_dev_manager(AudioDeviceManager& dev_manager) {
+    dev_manager.initialiseWithDefaultDevices(1, 1);
+    AudioDeviceManager::AudioDeviceSetup dev_info;
+    dev_info = dev_manager.getAudioDeviceSetup();
+    dev_info.sampleRate = SAMPLE_RATE;
+    dev_manager.setAudioDeviceSetup(dev_info, false);
+}
+
 class AudioDevice : public AudioIODeviceCallback {
 
 public:

@@ -2,6 +2,7 @@
 
 #include "Mutex_FIFO.h"
 #include "CRC.h"
+#include "HammingCode.h"
 
 #define CRC_BITS 8
 
@@ -112,15 +113,12 @@ public:
     
     void modulate(std::deque<bool> frame) {
 
+        //frame = hammingEncode(frame);
         encode_crc(frame);
+        
         int length = frame.size();
 		encode_header(length, frame, LENGTH_BITS);
 
-        /*frame = hammingEncode(frame);
-        length = frame.size();
-
-        std::vector<bool> length_bits = dec2bin(length, LENGTH_BITS);
-        frame.insert(frame.begin(), length_bits.begin(), length_bits.end());*/
 
         std::deque<float> output_track;
         output_track.insert(output_track.end(), chirp.begin(), chirp.end());

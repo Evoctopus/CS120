@@ -20,7 +20,6 @@
 #define ACK_TYPE 1
 
 
-
 class MAC : public juce::Thread
 {
 
@@ -236,6 +235,7 @@ public:
 							expected_seq++;
 						}
 						receiving_logger.log_message(format("Received Frame",seq, ": type", type));
+						//printf("Received Frame%d\n", seq);
 						output_fifo.push(std::make_pair(type, std::move(receiving_buffer)));
 						send_ACK(src, seq);
 						audio_thread_flag.wake_up();

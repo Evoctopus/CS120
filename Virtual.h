@@ -2,7 +2,6 @@
 
 #include "Utils.h"
 #include "MAC.h"
-#include "SharedMem.h"
 
 #define DST_ADDRESS 1
 

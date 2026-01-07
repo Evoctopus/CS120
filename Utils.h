@@ -1,5 +1,7 @@
 #pragma once
 
+#define NOMINMAX
+
 #include <JuceHeader.h>
 #include <vector>
 #include <random>
@@ -9,10 +11,10 @@
 #include <chrono>
 #include <format>
 #include <algorithm>
-#include "Bimap.h"
 #include "Mutex_FIFO.h"
 #include "CRC.h"
 #include "Logger.h"
+#include "SharedMem.h"
 
 
 #define SAMPLE_RATE 96000

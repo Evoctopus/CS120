@@ -1,6 +1,7 @@
 #pragma once
 #include "Utils.h"
 #include "MAC.h"
+#include "HammingCode.h"
 
 using namespace juce;
 
@@ -157,6 +158,7 @@ public:
                             if (decode_crc(decoded_bits)) {
                                 frame_detected++;
                                 demodulating_logger.log_message(format("Frame length ", frame_length - CRC_BITS));
+                                //decoded_bits = hammingDecode(decoded_bits);
                                 mac_fifo.push(std::move(decoded_bits));
                                 mac_thread_flag.wake_up();
                             }
