@@ -1,10 +1,5 @@
 #pragma once
 
-#define NOMINMAX
-#include <winsock2.h>
-#pragma comment(lib, "wpcap.lib")
-#pragma comment(lib, "ws2_32.lib")
-
 #include <JuceHeader.h>
 #include <vector>
 #include <random>
@@ -14,7 +9,6 @@
 #include <chrono>
 #include <format>
 #include <algorithm>
-#include <pcap.h>
 #include "Bimap.h"
 #include "Mutex_FIFO.h"
 #include "CRC.h"
@@ -53,6 +47,26 @@ struct ThreadFlag {
 		cv.notify_one();
 	}
 };
+
+
+std::vector<std::string> splitString(const std::string& str, char delimiter, int count=-1) {
+	std::vector<std::string> result;
+	size_t start = 0;  // 子串起始位置
+	size_t end = str.find(delimiter);  // 查找第一个分隔符的位置
+
+	while (end != std::string::npos && count != 0) {  // 只要找到分隔符就继续
+		// 截取[start, end)区间的子串（不包含分隔符）
+		result.push_back(str.substr(start, end - start));
+		start = end + 1;  // 更新起始位置为分隔符的下一个字符
+		end = str.find(delimiter, start);  // 从新起始位置继续查找分隔符
+		count--;
+	}
+
+	// 处理最后一段子串
+	result.push_back(str.substr(start));
+
+	return result;
+}
 
 
 uint64_t get_timestamp_milliseconds() {

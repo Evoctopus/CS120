@@ -26,6 +26,7 @@ public:
         int numSamples,
         const AudioIODeviceCallbackContext& context) {
 
+       
 		size_t samples = sending_fifo.pop_batch(outputChannelData[0], numSamples);
 		//if (samples != numSamples && samples > 0) printf("Warning: sent only %zu out of %d samples\n", samples, numSamples);
         for (int i = samples; i < numSamples; ++i) {

@@ -169,9 +169,9 @@ public:
                         }
                     }
                     time++;
-                    
                 }
                 samples = receiving_fifo.pop_batch(buffer, 512);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
         demodulating_logger.log_message(format("Frame ", frame_detected, " decoded"));

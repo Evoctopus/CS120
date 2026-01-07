@@ -10,15 +10,16 @@
 
 #define DEST_BITS 2
 #define SRC_BITS 2
-#define TYPE_BITS 2
-#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS
+#define SEQUENCE_BITS 8
+#define TYPE_BITS 3
+#define MAC_HEADER_LENGTH DEST_BITS+SRC_BITS+TYPE_BITS+SEQUENCE_BITS
  
 #define LISTENING_TIME 10
 
 #define DATA_TYPE 0
 #define ACK_TYPE 1
-#define ICMP_REQUEST_TYPE 2
-#define ICMP_REPLY_TYPE 3
+
+
 
 class MAC : public juce::Thread
 {
@@ -33,8 +34,7 @@ private:
 	std::atomic<bool>& channel_is_idle;
 
 	std::mutex mtx;
-	int src;
-
+	int local_mac;
 
 	std::thread timeout_thread;
 	std::atomic<bool> stop_timeout_thread{ false };
@@ -63,7 +63,8 @@ private:
 			std::this_thread::sleep_for(std::chrono::milliseconds(backoff_time));
 		}
 	};
-	int  LFS = 0;
+	int LFS = 0;
+	int expected_seq = 0;
 
 	std::deque<Frame> frames_buffer;
 	Frame current_sending_frame;
@@ -74,7 +75,7 @@ private:
 		while (!stop_timeout_thread) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
 			if (!Tx_pending) continue;
-\
+			
 			auto now = std::chrono::steady_clock::now();
 			
 			Frame& frame = current_sending_frame;
@@ -137,7 +138,7 @@ public:
 		sending_logger.init("Sender.log");
 		receiving_logger.init("Receiver.log");
 		printf("Your local audio MAC address: ");
-		scanf("%d", &src);
+		scanf("%d", &local_mac);
 	}
 
 	~MAC() {
@@ -147,49 +148,52 @@ public:
 		}
 	}
 
-	void send_data(const std::deque<bool>& data, int dest, int type) {
+	void send_data(const std::deque<bool>& data, int dest, int type)
+	{	
+		sending_logger.log_message(format("Preparing to send data of length ", data.size(), " bits to MAC ", dest, " of type ", type));
+		if (data.size() == 0) add_to_queue(std::deque<bool>(), dest, type);
+		auto frame_begin = data.begin();
+		while (frame_begin < data.end())
+		{
+			auto remaining_bits = std::distance(frame_begin, data.end());
+			size_t frame_size = static_cast<size_t>(std::min(remaining_bits, static_cast<decltype(remaining_bits)>(BITS_PER_FRAME)));
+			auto frame_end = frame_begin;
+			std::advance(frame_end, frame_size);
+			std::deque<bool> frame(frame_begin, frame_end);
+			add_to_queue(frame, dest, type);
+			frame_begin = frame_end;
+		}
+	}
+	
+	void add_to_queue(std::deque<bool>& frame_buffer, int dest, int type) {
 
-		std::lock_guard<std::mutex> lock(mtx);  // 线程安全
-
-		std::deque<bool> frame_buffer;
-		frame_buffer = data;
-
-		encode_mac_header(frame_buffer, type, dest);
-
-
+		encode_mac_header(frame_buffer, type, dest, LFS);
 		Frame frame;
-		frame.data = std::move(frame_buffer); 
+		frame.data = std::move(frame_buffer);
 		frame.resend_count = 0;
 		frame.sequence_num = LFS;
 		frame.retry_count = 0;
 
+		sending_logger.log_message(format("Adding Frame", LFS, " to queue"));
+
 		/*auto now = std::chrono::steady_clock::now();
 		frame.send_time = now;
 		modulator.modulate(frame.data);*/
-		
+
 		if (!Tx_pending) {
-			sending_logger.log_message(format("Sending Frame", LFS));
 			current_sending_frame = frame;
 			Tx_pending.store(true);
 		}
 		else {
-			sending_logger.log_message(format("Ack not received, add Frame", LFS, " to buffer"));
 			frames_buffer.push_back(std::move(frame));
 		}
-		
 		LFS++;
 		return;
 	}
 
-	void handle_ack() {
+	void update_frame_buffer(int seq) {
 		
-		std::lock_guard<std::mutex> lock(mtx);  
-		sending_logger.log_message(format("Received ACK "));
-		update_frame_buffer();
-		
-	}
-
-	void update_frame_buffer() {
+		if (seq != current_sending_frame.sequence_num) return;
 		if (frames_buffer.empty()) {
 			Tx_pending = false;
 			return;
@@ -199,30 +203,6 @@ public:
 			frames_buffer.pop_front();
 			Tx_pending = true;
 		}
-	}
-	
-	void handle_frame(const std::deque<bool>& data, int src) {
-		std::lock_guard<std::mutex> lock(mtx); 
-
-		output_fifo.push(std::make_pair(DATA_TYPE, data));
-		audio_thread_flag.wake_up();
-
-		receiving_logger.log_message(format("Received Frame"));
-		send_ACK(src);	
-		return;
-	}
-
-	void send_icmp_reply(int dst) {
-		std::deque<bool> frame;
-		encode_mac_header(frame, ICMP_REPLY_TYPE, dst);
-		modulator.modulate(frame);
-	}
-
-	void send_icmp_request(int dst, uint32_t ip) {
-		
-		std::deque<bool> data;
-		encode_header(ip, data, 256);
-		send_data(data, dst, ICMP_REQUEST_TYPE);
 	}
 	
 
@@ -238,48 +218,49 @@ public:
 			{
 				if (receiving_buffer.size() < MAC_HEADER_LENGTH) continue;
 				int dest = decode_header(DEST_BITS, receiving_buffer);
-				if (dest == src) {
+				if (dest == local_mac) {
 					int src = decode_header(SRC_BITS, receiving_buffer);
+					int seq = decode_header(SEQUENCE_BITS, receiving_buffer);
 					int type = decode_header(TYPE_BITS, receiving_buffer);
-					switch (type) {
-					case DATA_TYPE:
-						handle_frame(receiving_buffer, src);
-						break;
-					case ACK_TYPE:
-						handle_ack();
-						break;
-					case ICMP_REQUEST_TYPE:
-						output_fifo.push(std::make_pair(ICMP_REQUEST_TYPE, std::move(receiving_buffer)));
-						receiving_logger.log_message(format("Receive Request, Waking up Ip Handler to handle"));
+					if (type == ACK_TYPE) {
+						sending_logger.log_message(format("Received ACK ", seq));
+						update_frame_buffer(seq);
+					}
+					else {
+						if (seq != expected_seq) {
+							send_ACK(src, seq);
+							receiving_logger.log_message(format("Expected Seq ", expected_seq, " but got ", seq));
+							continue;
+						}
+						else {
+							expected_seq++;
+						}
+						receiving_logger.log_message(format("Received Frame",seq, ": type", type));
+						output_fifo.push(std::make_pair(type, std::move(receiving_buffer)));
+						send_ACK(src, seq);
 						audio_thread_flag.wake_up();
-						break;
-					case ICMP_REPLY_TYPE:
-						update_frame_buffer();
-						output_fifo.push(std::make_pair(ICMP_REPLY_TYPE, std::move(receiving_buffer)));
-						receiving_logger.log_message(format("Receive Reply, Waking up Ip Handler to handle"));
-						audio_thread_flag.wake_up();
-						break;
-					default:
-						receiving_logger.log_message(format("Unknown type ", type));
 					}
 				}
 				else {
 					receiving_logger.log_message(format("The frame is sent to ", dest, " not to me"));
 				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}
 	}
 
-	void encode_mac_header(std::deque<bool>& payload, int type, int dest) const {
+	void encode_mac_header(std::deque<bool>& payload, int type, int dest, int seq) const {
 		encode_header(type, payload, TYPE_BITS);
-		encode_header(src, payload, SRC_BITS);
+		encode_header(seq, payload, SEQUENCE_BITS);
+		encode_header(local_mac, payload, SRC_BITS);
 		encode_header(dest, payload, DEST_BITS);
 		return;
 	}
 
-	void send_ACK(int dest) {
+	void send_ACK(int dest, int seq) {
+		receiving_logger.log_message(format("Send ACK ", seq));
 		std::deque<bool> ack_frame;
-		encode_mac_header(ack_frame, ACK_TYPE, dest);
+		encode_mac_header(ack_frame, ACK_TYPE, dest, seq);
 		modulator.modulate(ack_frame);
 		return;
 	}
