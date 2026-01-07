@@ -41,7 +41,9 @@ public:
         for (int i = samples; i < numSamples; ++i) {
             outputChannelData[0][i] = 0.0f; 
 		}
-        
+
+        receiving_fifo.push_batch(inputChannelData[0], numSamples);
+        /*
         float power = 0.0f;
         for (int i = 0; i < numSamples; ++i) {
             float sample = inputChannelData[0][i];
@@ -55,6 +57,6 @@ public:
         }
         else {
             channel_is_idle = true;
-        }
+        }*/
     }
 };

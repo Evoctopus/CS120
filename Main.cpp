@@ -56,25 +56,26 @@ int main(int argc, char* argv[])
     AudioDeviceManager dev_manager;
     initialize_dev_manager(dev_manager);
 
-    SharedMemoryComm comm("SharedMemBuffer", 4096, false);
+    //SharedMemoryComm comm("SharedMemBuffer", 4096, false);
 
     AudioDevice audio_device(Sending_FIFO, Receiving_FIFO, channel_is_idle, demo_thread_flag);
     Demodulator demodulator(Receiving_FIFO, MAC_FIFO, mac_thread_flag, demo_thread_flag);
     Modulator modulator(Sending_FIFO);
-    MAC mac(MAC_FIFO, INTER_FIFO, modulator, channel_is_idle, mac_thread_flag, virtual_thread_flag);
-	Virtual virtual_device(INTER_FIFO, comm, mac, virtual_thread_flag);
+    //MAC mac(MAC_FIFO, INTER_FIFO, modulator, channel_is_idle, mac_thread_flag, virtual_thread_flag);
+	//Virtual virtual_device(INTER_FIFO, comm, mac, virtual_thread_flag);
  
     dev_manager.addAudioCallback(&audio_device);
     demodulator.startThread();
-    mac.startThread();
-    virtual_device.startThread();
+    //mac.startThread();
+    //virtual_device.startThread();
 
-    //std::vector<bool> data = readBinFile("INPUT.bin");
-    //std::vector<std::deque<bool>> frames = split_data_and_send(data);
-    //for (const auto& frame : frames) {
-        //modulator.modulate(frame);
-    //}
-    /*std::deque<bool> payload(data.begin(), data.end());
+    std::vector<bool> data = readFromFile("input.bin");
+    std::vector<std::deque<bool>> frames = split_data(data);
+    for (const auto& frame : frames) {
+        modulator.modulate(frame);
+    }
+    /*std::vector<bool> data = readBinFile("input.bin");
+    std::deque<bool> payload(data.begin(), data.end());
     int dest;
     std::cout << "DEST: ";
     std::cin >> dest;
@@ -96,9 +97,11 @@ int main(int argc, char* argv[])
 
     dev_manager.removeAudioCallback(&audio_device);
     demodulator.signalThreadShouldExit();
-    mac.signalThreadShouldExit();
-	virtual_device.signalThreadShouldExit();
+    //mac.signalThreadShouldExit();
+	//virtual_device.signalThreadShouldExit();
 
+    compare(flatten(MAC_FIFO), data);
+    writeToFile(flatten(MAC_FIFO), "proj1_out");
 
     //compare(flatten(INTER_FIFO), data);
     //writeBinFile("ANSWER.bin", flatten(INTER_FIFO));

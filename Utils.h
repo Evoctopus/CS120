@@ -17,13 +17,13 @@
 #include "SharedMem.h"
 
 
-#define SAMPLE_RATE 96000
+#define SAMPLE_RATE 48000
 #define PI acos(-1)
 
 
-#define PREAMBLE_LENGTH 240
-#define BITS_PER_FRAME 800
-#define SAMPLES_PER_BIT 6
+#define PREAMBLE_LENGTH 440
+#define BITS_PER_FRAME 200
+#define SAMPLES_PER_BIT 48
 #define SILENCE_LENGTH 100
 #define FREQUENCY1 8000
 #define FREQUENCY2 16000

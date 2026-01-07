@@ -113,16 +113,16 @@ public:
     
     void modulate(std::deque<bool> frame) {
 
-        //frame = hammingEncode(frame);
-        encode_crc(frame);
+        frame = hammingEncode(frame);
+        //encode_crc(frame);
         
-        int length = frame.size();
-		encode_header(length, frame, LENGTH_BITS);
+        //int length = frame.size();
+		//encode_header(length, frame, LENGTH_BITS);
 
 
         std::deque<float> output_track;
         output_track.insert(output_track.end(), chirp.begin(), chirp.end());
-        std::vector<float> encoded_signal = Line_Coding(frame);
+        std::vector<float> encoded_signal = PSK(frame);
         output_track.insert(output_track.end(), encoded_signal.begin(), encoded_signal.end());
 
 		sending_fifo.push_batch(std::move(output_track));

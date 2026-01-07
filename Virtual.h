@@ -10,7 +10,7 @@
 #define HTTP_REPLY_TYPE 4
 #define HTTP_REQUEST_TYPE 5
 
-#define PING_TIMEOUT_MS 2000
+#define PING_TIMEOUT_MS 20000
 
 
 

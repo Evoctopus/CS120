@@ -68,7 +68,7 @@ private:
     }
 
     int get_sample_length(int length) {
-        return length * SAMPLES_PER_BIT;
+        return length * SAMPLES_PER_BIT / 2;
     }
 
 public:
@@ -86,13 +86,16 @@ public:
         demodulating_logger.init("Demodulating Log.log");
     }
 
+    ~Demodulator() {
+        demodulating_logger.log_message(format("Frame ", frame_detected, " decoded"));
+        writeLog();
+    }
+
     void writeLog(bool append = false) {
 
         writeToFile(frame_buffer, "received_signal.txt", '\n', append);
         writeToFile(syncPower_debug, "sync_power.txt", '\n', append);
-        writeToFile(power_debug, "power.txt", '\n');
-
-        //std::cout << frame_detected << std::endl;
+        std::cout << frame_detected << std::endl;
     }
 
     void run() override {
@@ -101,15 +104,14 @@ public:
         float buffer[512];
         while (!threadShouldExit()) {
             
-            demo_thread_flag.sleep();
+            //demo_thread_flag.sleep();
+
             size_t samples = receiving_fifo.pop_batch(buffer, 512);
             while (samples)
             {
                 for (int i = 0; i < samples; ++i) {
-                    //frame_buffer.push_back(current_sample);
-                    //power = power * (1 - 1.0f / 64.0f) + current_sample * current_sample / 64.0f;
-                    //power_debug.push_back(power);
                     current_sample = buffer[i];
+                    frame_buffer.push_back(current_sample);
                     if (state == SYNC) {
 
                         syncFIFO.pop_front();
@@ -121,7 +123,7 @@ public:
                             syncPower += syncFIFO[j] * chirp[j];
                         }
                         syncPower /= 100.0f;
-                        //syncPower_debug.push_back(syncPower);
+                        syncPower_debug.push_back(syncPower);
 
                         if (syncPower > syncPower_localMax && syncPower > SYNC_POWER_BOARDER) {
                             syncPower_localMax = syncPower;
@@ -130,6 +132,7 @@ public:
                         }
                         else if ((time - start_index > PREAMBLE_LENGTH / 2) && (start_index != 0)) {
                             demodulating_logger.log_message(format("Preamble detected with sync power: ", syncPower_localMax));
+                            printf("Preamble detected with sync power: %d\n", syncPower_localMax);
                             syncPower_localMax = 0.0f;
                             start_index = 0;
                             time = 0;
@@ -139,9 +142,11 @@ public:
                     }
                     else if (state == DECODE) {
 
-                        //syncPower_debug.push_back(0.0f);
+                        syncPower_debug.push_back(0.0f);
                         decodedFIFO.push_back(current_sample);
                         size_t decoded_size = decodedFIFO.size();
+
+                        frame_length = 208;
 
                         if (decoded_size >= get_sample_length(LENGTH_BITS) && frame_length == 0) {
 
@@ -154,11 +159,12 @@ public:
 
                         }
                         if (frame_length != 0 && decoded_size >= get_sample_length(frame_length)) {
-                            std::deque<bool> decoded_bits = extract_data_LC(decodedFIFO, frame_length);
-                            if (decode_crc(decoded_bits)) {
+                            std::deque<bool> decoded_bits = extract_data_PSK(decodedFIFO, frame_length);
+                            if (true || decode_crc(decoded_bits)) {
                                 frame_detected++;
-                                demodulating_logger.log_message(format("Frame length ", frame_length - CRC_BITS));
-                                //decoded_bits = hammingDecode(decoded_bits);
+                                //demodulating_logger.log_message(format("Frame length ", frame_length - CRC_BITS));
+                                decoded_bits = hammingDecode(decoded_bits);
+                                
                                 mac_fifo.push(std::move(decoded_bits));
                                 mac_thread_flag.wake_up();
                             }
@@ -173,11 +179,10 @@ public:
                     time++;
                 }
                 samples = receiving_fifo.pop_batch(buffer, 512);
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                //std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
-        demodulating_logger.log_message(format("Frame ", frame_detected, " decoded"));
-        //writeLog();
+
     }
 
     std::deque<bool> extract_data_PSK(const std::deque<float>& signal, int bit_num) {
